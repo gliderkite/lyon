@@ -1,11 +1,11 @@
 use crate::extra::rust_logo::build_logo_path;
 use crate::geometry_builder::*;
 use crate::math::*;
-use crate::path::builder::PathBuilder;
 use crate::path::{Path, PathSlice};
 use crate::{FillOptions, FillRule, FillTessellator, FillVertex, TessellationError, VertexId};
 
-use std::env;
+use core::f32::consts::PI;
+use alloc::vec::Vec;
 
 fn tessellate(path: PathSlice, fill_rule: FillRule, log: bool) -> Result<usize, TessellationError> {
     let mut buffers: VertexBuffers<Point, u16> = VertexBuffers::new();
@@ -24,7 +24,7 @@ fn tessellate(path: PathSlice, fill_rule: FillRule, log: bool) -> Result<usize, 
         tess.set_logging(log);
         tess.tessellate(&builder.build(), &options, &mut vertex_builder)?;
     }
-    return Ok(buffers.indices.len() / 3);
+    Ok(buffers.indices.len() / 3)
 }
 
 #[test]
@@ -36,15 +36,7 @@ fn test_too_many_vertices() {
         max_vertices: u32,
     }
     impl GeometryBuilder for Builder {
-        fn begin_geometry(&mut self) {}
         fn add_triangle(&mut self, _a: VertexId, _b: VertexId, _c: VertexId) {}
-        fn end_geometry(&mut self) -> Count {
-            Count {
-                vertices: 0,
-                indices: 0,
-            }
-        }
-        fn abort_geometry(&mut self) {}
     }
 
     impl FillGeometryBuilder for Builder {
@@ -66,36 +58,45 @@ fn test_too_many_vertices() {
 
     assert_eq!(
         tess.tessellate(&path, &options, &mut Builder { max_vertices: 0 }),
-        Err(TessellationError::TooManyVertices),
+        Err(TessellationError::GeometryBuilder(
+            GeometryBuilderError::TooManyVertices
+        )),
     );
     assert_eq!(
         tess.tessellate(&path, &options, &mut Builder { max_vertices: 10 }),
-        Err(TessellationError::TooManyVertices),
+        Err(TessellationError::GeometryBuilder(
+            GeometryBuilderError::TooManyVertices
+        )),
     );
 
     assert_eq!(
         tess.tessellate(&path, &options, &mut Builder { max_vertices: 100 }),
-        Err(TessellationError::TooManyVertices),
+        Err(TessellationError::GeometryBuilder(
+            GeometryBuilderError::TooManyVertices
+        )),
     );
 }
 
+#[cfg(test)]
 fn test_path(path: PathSlice) {
     test_path_internal(path, FillRule::EvenOdd, None);
     test_path_internal(path, FillRule::NonZero, None);
 }
 
+#[cfg(test)]
 fn test_path_and_count_triangles(path: PathSlice, expected_triangle_count: usize) {
     test_path_internal(path, FillRule::EvenOdd, Some(expected_triangle_count));
     test_path_internal(path, FillRule::NonZero, None);
 }
 
+#[cfg(test)]
 fn test_path_internal(
     path: PathSlice,
     fill_rule: FillRule,
     expected_triangle_count: Option<usize>,
 ) {
-    let add_logging = env::var("LYON_ENABLE_LOGGING").is_ok();
-    let find_test_case = env::var("LYON_REDUCED_TESTCASE").is_ok();
+    let add_logging = std::env::var("LYON_ENABLE_LOGGING").is_ok();
+    let find_test_case = std::env::var("LYON_REDUCED_TESTCASE").is_ok();
 
     let res = if find_test_case {
         ::std::panic::catch_unwind(|| tessellate(path, fill_rule, false))
@@ -129,21 +130,20 @@ fn test_path_internal(
     panic!("Test failed with fill rule {:?}.", fill_rule);
 }
 
+#[cfg(test)]
 fn test_path_with_rotations(path: Path, step: f32, expected_triangle_count: Option<usize>) {
-    use std::f32::consts::PI;
-
     let mut angle = Angle::radians(0.0);
     while angle.radians < PI * 2.0 {
         //println!("\n\n ==================== angle = {:?}", angle);
 
-        let tranformed_path = path.clone().transformed(&Rotation::new(angle));
+        let transformed_path = path.clone().transformed(&Rotation::new(angle));
 
         test_path_internal(
-            tranformed_path.as_slice(),
+            transformed_path.as_slice(),
             FillRule::EvenOdd,
             expected_triangle_count,
         );
-        test_path_internal(tranformed_path.as_slice(), FillRule::NonZero, None);
+        test_path_internal(transformed_path.as_slice(), FillRule::NonZero, None);
 
         angle.radians += step;
     }
@@ -682,7 +682,7 @@ fn test_overlapping_with_intersection() {
 #[test]
 fn test_split_with_intersections() {
     // This is a reduced test case that was showing a bug where duplicate intersections
-    // were found during a split event, due to the sweep line beeing into a temporarily
+    // were found during a split event, due to the sweep line being into a temporarily
     // inconsistent state when insert_edge was called.
 
     let mut builder = Path::builder();
@@ -803,7 +803,7 @@ fn angle_precision() {
 
 #[test]
 fn n_segments_intersecting() {
-    use std::f32::consts::PI;
+    use core::f32::consts::PI;
 
     // This test creates a lot of segments that intersect at the same
     // position (center). Very good at finding precision issues.
@@ -2446,7 +2446,8 @@ fn issue_674() {
         &path,
         &FillOptions::tolerance(0.01),
         &mut simple_builder(&mut buffers),
-    ).unwrap();
+    )
+    .unwrap();
 
     // The issue was happening with tolerance 0.01 and not with 0.05 used in test_path
     // but run it anyway for good measure.
@@ -2454,4 +2455,49 @@ fn issue_674() {
 
     // SVG path syntax:
     // "M -87887.734375 73202.125 L -79942.6640625 73202.125 L -79942.671875 90023.078125 L -79942.6640625 86661.3046875 L -87887.734375 87599.5546875 L -90541.25 83022.0625"
+}
+
+#[test]
+fn test_triangle_winding() {
+    use crate::extra::rust_logo::build_logo_path;
+    use crate::math::Point;
+    use crate::GeometryBuilder;
+
+    struct Builder {
+        vertices: Vec<Point>,
+    }
+
+    impl GeometryBuilder for Builder {
+        fn add_triangle(&mut self, a: VertexId, b: VertexId, c: VertexId) {
+            let a = self.vertices[a.to_usize()];
+            let b = self.vertices[b.to_usize()];
+            let c = self.vertices[c.to_usize()];
+            assert!((b - a).cross(c - b) <= 0.0);
+        }
+    }
+
+    impl FillGeometryBuilder for Builder {
+        fn add_fill_vertex(&mut self, v: FillVertex) -> Result<VertexId, GeometryBuilderError> {
+            let id = VertexId(self.vertices.len() as u32);
+            self.vertices.push(v.position());
+
+            Ok(id)
+        }
+    }
+
+    let mut path = Path::builder().with_svg();
+    build_logo_path(&mut path);
+    let path = path.build();
+
+    let mut tess = FillTessellator::new();
+    let options = FillOptions::tolerance(0.05);
+
+    tess.tessellate(
+        &path,
+        &options,
+        &mut Builder {
+            vertices: Vec::new(),
+        },
+    )
+    .unwrap();
 }

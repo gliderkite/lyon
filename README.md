@@ -7,10 +7,10 @@ A path tessellation library written in rust for GPU-based 2D graphics rendering.
 
 <p align="center">
   <a href="https://crates.io/crates/lyon">
-      <img src="http://meritbadge.herokuapp.com/lyon" alt="crates.io">
+      <img src="https://img.shields.io/crates/v/lyon.svg" alt="crates.io">
   </a>
-  <a href="https://travis-ci.org/nical/lyon">
-      <img src="https://img.shields.io/travis/nical/lyon/master.svg" alt="Travis Build Status">
+  <a href="https://github.com/nical/lyon/actions">
+      <img src="https://github.com/nical/lyon/actions/workflows/main.yml/badge.svg" alt="Build Status">
   </a>
   <a href="https://docs.rs/lyon">
       <img src="https://docs.rs/lyon/badge.svg" alt="documentation">
@@ -46,7 +46,7 @@ fn main() {
     let path = builder.build();
     // Let's use our own custom vertex type instead of the default one.
     #[derive(Copy, Clone, Debug)]
-    struct MyVertex { position: [f32; 2] };
+    struct MyVertex { position: [f32; 2] }
     // Will contain the result of the tessellation.
     let mut geometry: VertexBuffers<MyVertex, u16> = VertexBuffers::new();
     let mut tessellator = FillTessellator::new();
@@ -86,11 +86,7 @@ Although the format of the output of the tessellators is customizable, the algor
 
 ### Is anti-aliasing supported?
 
-There is currently no built-in support for anti-aliasing in the tessellators. Anti-aliasing can still be achieved by users of this crate using techniques commonly employed in video games (msaa, taa, fxaa, etc.).
-
-### What is left to do before lyon 1.0?
-
-See the [1.0 milestone](https://github.com/nical/lyon/milestone/2) on the github repository.
+There is currently no built-in support for antialiasing in the tessellators. Antialiasing can still be achieved by users of this crate using techniques commonly employed in video games (msaa, taa, fxaa, etc.).
 
 ### I need help!
 
@@ -98,7 +94,7 @@ Don't hesitate to [file an issue](https://github.com/nical/lyon/issues/new), ask
 
 ### How can I help?
 
-See [CONTRIBUTING.md](https://github.com/nical/lyon/blob/master/CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/nical/lyon/blob/main/CONTRIBUTING.md).
 
 ## License
 
@@ -114,4 +110,4 @@ Dual MIT/Apache2 is strictly more permissive
 
 ### Contribution
 
-There is useful information for contributors in the [contribution guidelines](https://github.com/nical/lyon/blob/master/CONTRIBUTING.md).
+There is useful information for contributors in the [contribution guidelines](https://github.com/nical/lyon/blob/main/CONTRIBUTING.md).

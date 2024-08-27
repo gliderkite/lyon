@@ -1,6 +1,6 @@
 // This file contains tests that have been imported from Mapbox's Earcut tessellator
 // test suite available at: https://github.com/mapbox/earcut/tree/master/test/fixtures
-// Countrary to the rest of the code in the lyon repository, this file is placed under
+// Contrary to the rest of the code in the lyon repository, this file is placed under
 // the ISC license to match the original Mapbox code.
 //
 // -------------
@@ -19,10 +19,10 @@
 // THIS SOFTWARE.
 // -------------
 
-use crate::math::*;
 use crate::geometry_builder::{simple_builder, VertexBuffers};
+use crate::math::*;
 use crate::path::{Path, PathSlice};
-use crate::{FillTessellator, FillOptions, FillRule, TessellationError};
+use crate::{FillOptions, FillRule, FillTessellator, TessellationError};
 
 #[test]
 fn bad_diagonal() {
@@ -20184,7 +20184,7 @@ fn water_4() {
 fn earcut_test(path: &[&[[i32; 2]]]) {
     let mut builder = Path::builder();
     for &sub_path in path {
-        if sub_path.len() == 0 {
+        if sub_path.is_empty() {
             continue;
         }
         let start = sub_path[0];
@@ -20202,7 +20202,7 @@ fn earcut_test(path: &[&[[i32; 2]]]) {
 fn earcut_test_f32(path: &[&[[f32; 2]]]) {
     let mut builder = Path::builder();
     for &sub_path in path {
-        if sub_path.len() == 0 {
+        if sub_path.is_empty() {
             continue;
         }
         let start = sub_path[0];
@@ -20221,8 +20221,7 @@ fn earcut_test_f32(path: &[&[[f32; 2]]]) {
 fn tessellate(path: PathSlice, fill_rule: FillRule, log: bool) -> Result<usize, TessellationError> {
     let mut buffers: VertexBuffers<Point, u16> = VertexBuffers::new();
     {
-        let options = FillOptions::tolerance(0.05)
-            .with_fill_rule(fill_rule);
+        let options = FillOptions::tolerance(0.05).with_fill_rule(fill_rule);
 
         use crate::path::iterator::*;
         let mut builder = Path::builder();
@@ -20236,7 +20235,7 @@ fn tessellate(path: PathSlice, fill_rule: FillRule, log: bool) -> Result<usize, 
         tess.tessellate(&builder.build(), &options, &mut vertex_builder)
             .unwrap();
     }
-    return Ok(buffers.indices.len() / 3);
+    Ok(buffers.indices.len() / 3)
 }
 
 #[cfg(test)]

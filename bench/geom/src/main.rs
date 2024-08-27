@@ -3,38 +3,45 @@ extern crate lyon;
 extern crate bencher;
 
 use bencher::Bencher;
+use lyon::geom::euclid::default::Rotation2D;
+use lyon::geom::euclid::point2 as point;
+use lyon::geom::CubicBezierSegment;
 
-use lyon::geom::QuadraticBezierSegment;
-use lyon::math::*;
+const N: usize = 1000;
 
-const N: usize = 10;
-
-fn monotonic_intersection(bench: &mut Bencher) {
-    // TODO: bench a variety of curves
-    let c1 = QuadraticBezierSegment {
-        from: point(10.0, 0.0),
-        ctrl: point(10.0, 90.0),
-        to: point(100.0, 90.0),
-    }
-    .assume_monotonic();
-    let c2 = QuadraticBezierSegment {
-        from: point(0.0, 10.0),
-        ctrl: point(90.0, 10.0),
-        to: point(90.0, 100.0),
-    }
-    .assume_monotonic();
-
+fn cubic_intersections(bench: &mut Bencher) {
     bench.iter(|| {
+        let mut sum = 0.0;
+        let mut r: f64 = 0.0;
         for _ in 0..N {
-            let tolerance = 0.001;
-            c1.first_intersection_t(0.0..1.0, &c2, 0.0..1.0, tolerance);
-            c1.first_intersection_t(0.0..0.5, &c2, 0.0..0.5, tolerance);
-            c1.first_intersection_t(0.5..1.0, &c2, 0.5..1.0, tolerance);
-            c1.first_intersection_t(0.3..0.7, &c2, 0.3..0.7, tolerance);
+            r += 0.01;
+            let curve1 = CubicBezierSegment {
+                from: point(-100.0, -100.0),
+                ctrl1: point(100.0, -100.0),
+                ctrl2: point(-100.0, 100.0),
+                to: point(-100.0, 100.0),
+            }
+            .transformed(&Rotation2D::radians(r));
+
+            let curve2 = CubicBezierSegment {
+                from: point(-100.0, -100.0),
+                ctrl1: point(100.0, -100.0),
+                ctrl2: point(-100.0, 100.0),
+                to: point(-100.0, 100.0),
+            }
+            .transformed(&Rotation2D::radians(1.6));
+
+            let intersections = curve1.cubic_intersections_t(&curve2);
+
+            for a in &intersections {
+                sum += a.0;
+            }
         }
+
+        bencher::black_box(sum);
     });
 }
 
-benchmark_group!(intersections, monotonic_intersection);
+benchmark_group!(cubic, cubic_intersections);
 
-benchmark_main!(intersections);
+benchmark_main!(cubic);

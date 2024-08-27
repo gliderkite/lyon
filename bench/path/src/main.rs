@@ -7,7 +7,7 @@ use lyon::math::point;
 use lyon::path::commands;
 use lyon::path::traits::*;
 use lyon::path::PathBuffer;
-use lyon::path::{ControlPointId, EndpointId, Event, IdEvent, Path, PathEvent};
+use lyon::path::{ControlPointId, EndpointId, Event, IdEvent, Path, PathEvent, NO_ATTRIBUTES};
 
 use bencher::Bencher;
 
@@ -196,11 +196,16 @@ fn no_attrib_iter(bench: &mut Bencher) {
         let mut path = Path::builder_with_attributes(0);
         for _ in 0..N {
             for _ in 0..10 {
-                path.begin(point(0.0, 0.0), &[]);
+                path.begin(point(0.0, 0.0), NO_ATTRIBUTES);
                 for _ in 0..1_000 {
-                    path.line_to(point(1.0, 0.0), &[]);
-                    path.cubic_bezier_to(point(2.0, 0.0), point(2.0, 1.0), point(2.0, 2.0), &[]);
-                    path.quadratic_bezier_to(point(2.0, 0.0), point(2.0, 1.0), &[]);
+                    path.line_to(point(1.0, 0.0), NO_ATTRIBUTES);
+                    path.cubic_bezier_to(
+                        point(2.0, 0.0),
+                        point(2.0, 1.0),
+                        point(2.0, 2.0),
+                        NO_ATTRIBUTES,
+                    );
+                    path.quadratic_bezier_to(point(2.0, 0.0), point(2.0, 1.0), NO_ATTRIBUTES);
                 }
                 path.end(true);
             }

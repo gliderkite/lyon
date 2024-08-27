@@ -60,7 +60,11 @@ use crate::events::{Event, IdEvent, PathEvent};
 use crate::math::Point;
 use crate::{ControlPointId, EndpointId, EventId, Position, PositionStore};
 
-use std::fmt;
+use core::fmt;
+
+use crate::private::DebugValidator;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 // Note: Tried making the path generic over the integer type used to store
 // the commands to allow u16 and u32, but the performance difference is very
@@ -75,7 +79,7 @@ mod verb {
     pub const END: u32 = 5;
 }
 
-/// Sadly this is very close to std::slice::Iter but reimplementing
+/// Sadly this is very close to core::slice::Iter but reimplementing
 /// it manually to iterate over u32 makes a difference.
 /// It would seem that having next return u32 with a special value
 /// for the end of the iteration instead of Option<u32> should
@@ -85,7 +89,7 @@ mod verb {
 struct CmdIter<'l> {
     ptr: *const u32,
     end: *const u32,
-    _marker: std::marker::PhantomData<&'l u32>,
+    _marker: core::marker::PhantomData<&'l u32>,
 }
 
 impl<'l> CmdIter<'l> {
@@ -95,7 +99,7 @@ impl<'l> CmdIter<'l> {
         CmdIter {
             ptr,
             end,
-            _marker: std::marker::PhantomData,
+            _marker: core::marker::PhantomData,
         }
     }
 
@@ -326,12 +330,12 @@ impl<'l> fmt::Debug for PathCommandsSlice<'l> {
         write!(f, "\"")?;
         for evt in self.iter() {
             match evt {
-                IdEvent::Line { to, .. } => write!(f, "L {:?}", to),
-                IdEvent::Quadratic { ctrl, to, .. } => write!(f, "Q {:?} {:?} ", ctrl, to),
+                IdEvent::Line { to, .. } => write!(f, "L {to:?}"),
+                IdEvent::Quadratic { ctrl, to, .. } => write!(f, "Q {ctrl:?} {to:?} "),
                 IdEvent::Cubic {
                     ctrl1, ctrl2, to, ..
-                } => write!(f, "C {:?} {:?} {:?} ", ctrl1, ctrl2, to),
-                IdEvent::Begin { at, .. } => write!(f, "M {:?} ", at),
+                } => write!(f, "C {ctrl1:?} {ctrl2:?} {to:?} "),
+                IdEvent::Begin { at, .. } => write!(f, "M {at:?} "),
                 IdEvent::End { close: true, .. } => write!(f, "Z "),
                 IdEvent::End { close: false, .. } => Ok(()),
             }?;
@@ -360,7 +364,7 @@ impl<'l, Endpoint, ControlPoint> CommandsPathSlice<'l, Endpoint, ControlPoint> {
     /// and control point references.
     pub fn events(&self) -> Events<Endpoint, ControlPoint> {
         Events {
-            cmds: CmdIter::new(&self.cmds.cmds),
+            cmds: CmdIter::new(self.cmds.cmds),
             first_endpoint: 0,
             prev_endpoint: 0,
             endpoints: self.endpoints,
@@ -369,7 +373,7 @@ impl<'l, Endpoint, ControlPoint> CommandsPathSlice<'l, Endpoint, ControlPoint> {
     }
 }
 
-impl<'l, Endpoint, ControlPoint> std::ops::Index<EndpointId>
+impl<'l, Endpoint, ControlPoint> core::ops::Index<EndpointId>
     for CommandsPathSlice<'l, Endpoint, ControlPoint>
 {
     type Output = Endpoint;
@@ -378,7 +382,7 @@ impl<'l, Endpoint, ControlPoint> std::ops::Index<EndpointId>
     }
 }
 
-impl<'l, Endpoint, ControlPoint> std::ops::Index<ControlPointId>
+impl<'l, Endpoint, ControlPoint> core::ops::Index<ControlPointId>
     for CommandsPathSlice<'l, Endpoint, ControlPoint>
 {
     type Output = ControlPoint;
@@ -396,12 +400,12 @@ where
         write!(f, "{{ ")?;
         for evt in self.events() {
             match evt {
-                Event::Line { to, .. } => write!(f, "L {:?}", to),
-                Event::Quadratic { ctrl, to, .. } => write!(f, "Q {:?} {:?} ", ctrl, to),
+                Event::Line { to, .. } => write!(f, "L {to:?}"),
+                Event::Quadratic { ctrl, to, .. } => write!(f, "Q {ctrl:?} {to:?} "),
                 Event::Cubic {
                     ctrl1, ctrl2, to, ..
-                } => write!(f, "C {:?} {:?} {:?} ", ctrl1, ctrl2, to),
-                Event::Begin { at, .. } => write!(f, "M {:?} ", at),
+                } => write!(f, "C {ctrl1:?} {ctrl2:?} {to:?} "),
+                Event::Begin { at, .. } => write!(f, "M {at:?} "),
                 Event::End { close: true, .. } => write!(f, "Z "),
                 Event::End { close: false, .. } => Ok(()),
             }?;
@@ -413,44 +417,29 @@ where
 /// Builds path commands.
 ///
 /// See [`PathCommands`](struct.PathCommands.html).
-#[derive(Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct PathCommandsBuilder {
     cmds: Vec<u32>,
-    start: u32,
     first_event_index: u32,
-    in_subpath: bool,
-}
-
-impl Default for PathCommandsBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
+    validator: DebugValidator,
 }
 
 impl PathCommandsBuilder {
     /// Creates a builder without allocating memory.
     pub fn new() -> Self {
-        Self {
-            start: 0,
-            cmds: Vec::new(),
-            in_subpath: false,
-            first_event_index: 0,
-        }
+        Self::default()
     }
 
     /// Creates a pre-allocated builder.
     pub fn with_capacity(cap: usize) -> Self {
         Self {
-            start: 0,
             cmds: Vec::with_capacity(cap),
-            in_subpath: false,
-            first_event_index: 0,
+            ..Self::default()
         }
     }
 
     pub fn begin(&mut self, to: EndpointId) -> EventId {
-        debug_assert!(!self.in_subpath);
-        self.in_subpath = true;
+        self.validator.begin();
 
         self.first_event_index = self.cmds.len() as u32;
         let id = EventId(self.cmds.len() as u32);
@@ -461,8 +450,7 @@ impl PathCommandsBuilder {
     }
 
     pub fn end(&mut self, close: bool) -> Option<EventId> {
-        debug_assert!(self.in_subpath);
-        self.in_subpath = false;
+        self.validator.end();
 
         let id = EventId(self.cmds.len() as u32);
         let cmd = if close { verb::CLOSE } else { verb::END };
@@ -473,7 +461,7 @@ impl PathCommandsBuilder {
     }
 
     pub fn line_to(&mut self, to: EndpointId) -> EventId {
-        debug_assert!(self.in_subpath);
+        self.validator.edge();
 
         let id = EventId(self.cmds.len() as u32);
         self.cmds.push(verb::LINE);
@@ -483,7 +471,7 @@ impl PathCommandsBuilder {
     }
 
     pub fn quadratic_bezier_to(&mut self, ctrl: ControlPointId, to: EndpointId) -> EventId {
-        debug_assert!(self.in_subpath);
+        self.validator.edge();
 
         let id = EventId(self.cmds.len() as u32);
         self.cmds.push(verb::QUADRATIC);
@@ -499,7 +487,7 @@ impl PathCommandsBuilder {
         ctrl2: ControlPointId,
         to: EndpointId,
     ) -> EventId {
-        debug_assert!(self.in_subpath);
+        self.validator.edge();
 
         let id = EventId(self.cmds.len() as u32);
         self.cmds.push(verb::CUBIC);
@@ -512,7 +500,7 @@ impl PathCommandsBuilder {
 
     /// Consumes the builder and returns path commands.
     pub fn build(self) -> PathCommands {
-        debug_assert!(!self.in_subpath);
+        self.validator.build();
 
         PathCommands {
             cmds: self.cmds.into_boxed_slice(),

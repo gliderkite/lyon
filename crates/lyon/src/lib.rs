@@ -6,7 +6,7 @@
 //! ![logo](https://nical.github.io/lyon-doc/lyon-logo.svg)
 //!
 //! [![crate](https://img.shields.io/crates/v/lyon.svg)](https://crates.io/crates/lyon)
-//! [![ci](https://img.shields.io/travis/nical/lyon/master.svg)](https://travis-ci.org/nical/lyon)
+//! [![ci](https://github.com/nical/lyon/actions/workflows/main.yml/badge.svg)](https://github.com/nical/lyon/actions)
 //!
 //! # Crates
 //!
@@ -24,15 +24,9 @@
 //! * [![crate](https://img.shields.io/crates/v/lyon_geom.svg)](https://crates.io/crates/lyon_geom)
 //!   [![doc](https://docs.rs/lyon_geom/badge.svg)](https://docs.rs/lyon_geom) -
 //!   **lyon_geom** - 2d utilities for cubic and quadratic bézier curves, arcs and more.
-//! * [![crate](https://img.shields.io/crates/v/lyon_svg.svg)](https://crates.io/crates/lyon_svg)
-//!   [![doc](https://docs.rs/lyon_svg/badge.svg)](https://docs.rs/lyon_svg) -
-//!   **lyon_svg** - Create paths using SVG's path syntax.
 //! * [![crate](https://img.shields.io/crates/v/lyon_extra.svg)](https://crates.io/crates/lyon_extra)
 //!   [![doc](https://docs.rs/lyon_extra/badge.svg)](https://docs.rs/lyon_extra) -
 //!   **lyon_extra** - Additional testing and debugging tools.
-//! * [![crate](https://img.shields.io/crates/v/lyon_tess2.svg)](https://crates.io/crates/lyon_tess2)
-//!   [![doc](https://docs.rs/lyon_tess2/badge.svg)](https://docs.rs/lyon_tess2) -
-//!   **lyon_tess2** - Alternative fill tessellation implementation using [libtess2](https://github.com/memononen/libtess2).
 //!
 //! Each `lyon_<name>` crate is reexported as a `<name>` module in `lyon`. For example:
 //!
@@ -53,14 +47,13 @@
 //! serialization using serde can be enabled on each crate using the
 //! `serialization` feature flag (disabled by default).
 //!
-//! When using the main crate `lyon`, the `lyon_svg`, `lyon_tess2` and
-//! `lyon_extra` dependencies are disabled by default. They can be added
-//! with the feature flags `svg`, `tess2` and `extra`.
+//! When using the main crate `lyon`, `lyon_extra` dependencies is disabled by default.
+//! It can be added with the feature flags `extra`.
 //!
 //! # Additional documentation and links
 //!
-//! * [wgpu example](https://github.com/nical/lyon/tree/master/examples/wgpu).
-//! * [wgpu_svg example](https://github.com/nical/lyon/tree/master/examples/wgpu_svg) similar to the first example,
+//! * [wgpu example](https://github.com/nical/lyon/tree/main/examples/wgpu).
+//! * [wgpu_svg example](https://github.com/nical/lyon/tree/main/examples/wgpu_svg) similar to the first example,
 //!   can render a very small subset of SVG.
 //! * There is some useful documentation on the project's [wiki](https://github.com/nical/lyon/wiki).
 //! * The source code is available on the project's [git repository](https://github.com/nical/lyon).
@@ -77,8 +70,8 @@
 //! to obtain the fill tessellation a rectangle with rounded corners:
 //!
 //! ```
-//! use lyon::math::{rect, Point};
-//! use lyon::path::{builder::*, Winding};
+//! use lyon::math::{Box2D, Point, point};
+//! use lyon::path::{Winding, builder::BorderRadii};
 //! use lyon::tessellation::{FillTessellator, FillOptions, VertexBuffers};
 //! use lyon::tessellation::geometry_builder::simple_builder;
 //!
@@ -94,14 +87,14 @@
 //!     );
 //!
 //!     builder.add_rounded_rectangle(
-//!         &rect(0.0, 0.0, 100.0, 50.0),
+//!         &Box2D { min: point(0.0, 0.0), max: point(100.0, 50.0) },
 //!         &BorderRadii {
 //!             top_left: 10.0,
 //!             top_right: 5.0,
 //!             bottom_left: 20.0,
 //!             bottom_right: 25.0,
 //!         },
-//!         Winding::Positive
+//!         Winding::Positive,
 //!     );
 //!
 //!     builder.build();
@@ -178,26 +171,18 @@
 //! Lyon does not provide with any GPU abstraction or rendering backend (for now).
 //! It is up to the user of this crate to decide whether to use OpenGL, vulkan, gfx-rs,
 //! wgpu, glium, or any low level graphics API and how to render it.
-//! The [wgpu example](https://github.com/nical/lyon/tree/master/examples/wgpu)
+//! The [wgpu example](https://github.com/nical/lyon/tree/main/examples/wgpu)
 //! can be used to get an idea of how to render the geometry (in this case
 //! using wgpu).
 
 pub extern crate lyon_algorithms;
 #[cfg(feature = "extra")]
 pub extern crate lyon_extra;
-#[cfg(feature = "svg")]
-pub extern crate lyon_svg;
-#[cfg(feature = "libtess2")]
-pub extern crate lyon_tess2;
 pub extern crate lyon_tessellation;
 
 pub use lyon_algorithms as algorithms;
 #[cfg(feature = "extra")]
 pub use lyon_extra as extra;
-#[cfg(feature = "svg")]
-pub use lyon_svg as svg;
-#[cfg(feature = "libtess2")]
-pub use lyon_tess2 as tess2;
 pub use lyon_tessellation as tessellation;
 pub use tessellation::geom;
 pub use tessellation::path;

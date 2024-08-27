@@ -1,13 +1,16 @@
-//! Various math tools that are mostly usefull for the tessellators.
+//! Various math tools that are mostly useful for the tessellators.
 
 use crate::math::*;
+
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
 /// Compute a normal vector at a point P such that ```x ---e1----> P ---e2---> x```
 ///
 /// The resulting vector is not normalized. The length is such that extruding the shape
 /// would yield parallel segments exactly 1 unit away from their original. (useful
 /// for generating strokes and vertex-aa).
-/// The normal points towards the left side of e1.
+/// The normal points towards the positive side of e1.
 ///
 /// v1 and v2 are expected to be normalized.
 pub fn compute_normal(v1: Vector, v2: Vector) -> Vector {
@@ -21,7 +24,7 @@ pub fn compute_normal(v1: Vector, v2: Vector) -> Vector {
     let v12 = v1 + v2;
 
     if v12.square_length() < epsilon {
-        return n1;
+        return vector(0.0, 0.0);
     }
 
     let tangent = v12.normalize();
@@ -47,6 +50,10 @@ fn test_compute_normal() {
     assert_almost_eq(
         compute_normal(vector(1.0, 0.0), vector(0.0, 1.0)),
         vector(-1.0, 1.0),
+    );
+    assert_almost_eq(
+        compute_normal(vector(1.0, 0.0), vector(0.0, -1.0)),
+        vector(1.0, 1.0),
     );
     assert_almost_eq(
         compute_normal(vector(1.0, 0.0), vector(1.0, 0.0)),

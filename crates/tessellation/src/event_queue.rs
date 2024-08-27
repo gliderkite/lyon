@@ -1,14 +1,14 @@
 use crate::fill::{compare_positions, is_after};
-use crate::geom::{CubicBezierSegment, QuadraticBezierSegment};
+use crate::geom::{CubicBezierSegment, LineSegment, QuadraticBezierSegment};
 use crate::math::{point, Point};
 use crate::path::private::DebugValidator;
 use crate::path::{EndpointId, IdEvent, PathEvent, PositionStore};
 use crate::Orientation;
 
-use std::cmp::Ordering;
-use std::mem::swap;
-use std::ops::Range;
-use std::{f32, u32, usize};
+use core::cmp::Ordering;
+use core::mem::swap;
+use core::ops::Range;
+use alloc::vec::Vec;
 
 #[inline]
 fn reorient(p: Point) -> Point {
@@ -28,7 +28,7 @@ pub(crate) struct Event {
 #[derive(Clone, Debug)]
 pub(crate) struct EdgeData {
     pub to: Point,
-    pub range: std::ops::Range<f32>,
+    pub range: core::ops::Range<f32>,
     pub winding: i16,
     pub is_edge: bool,
     pub from_id: EndpointId,
@@ -55,7 +55,7 @@ impl EventQueue {
         EventQueue {
             events: Vec::new(),
             edge_data: Vec::new(),
-            first: 0,
+            first: INVALID_EVENT_ID,
             sorted: false,
         }
     }
@@ -72,7 +72,7 @@ impl EventQueue {
     pub fn reset(&mut self) {
         self.events.clear();
         self.edge_data.clear();
-        self.first = 0;
+        self.first = INVALID_EVENT_ID;
         self.sorted = false;
     }
 
@@ -81,10 +81,11 @@ impl EventQueue {
     /// The tolerance threshold is used for curve flattening approximation. See the
     /// [Flattening and tolerance](index.html#flattening-and-tolerance) section of the
     /// crate documentation.
-    pub fn from_path(tolerance: f32, path: impl Iterator<Item = PathEvent>) -> Self {
+    pub fn from_path(tolerance: f32, path: impl IntoIterator<Item = PathEvent>) -> Self {
+        let path = path.into_iter();
         let (min, max) = path.size_hint();
         let capacity = max.unwrap_or(min);
-        let mut builder = EventQueueBuilder::with_capacity(capacity);
+        let mut builder = EventQueueBuilder::with_capacity(capacity, tolerance);
         builder.set_path(tolerance, Orientation::Vertical, path);
 
         builder.build()
@@ -100,19 +101,19 @@ impl EventQueue {
     pub fn from_path_with_ids(
         tolerance: f32,
         sweep_orientation: Orientation,
-        path: impl Iterator<Item = IdEvent>,
+        path: impl IntoIterator<Item = IdEvent>,
         positions: &impl PositionStore,
     ) -> Self {
+        let path = path.into_iter();
         let (min, max) = path.size_hint();
         let capacity = max.unwrap_or(min);
-        let mut builder = EventQueueBuilder::with_capacity(capacity);
+        let mut builder = EventQueueBuilder::with_capacity(capacity, tolerance);
         builder.set_path_with_ids(tolerance, sweep_orientation, path, positions);
 
         builder.build()
     }
 
-    // TODO: this should take the tolerance as parameter.
-    pub fn into_builder(mut self) -> EventQueueBuilder {
+    pub fn into_builder(mut self, tolerance: f32) -> EventQueueBuilder {
         self.reset();
         EventQueueBuilder {
             queue: self,
@@ -120,8 +121,8 @@ impl EventQueue {
             prev: point(f32::NAN, f32::NAN),
             second: point(f32::NAN, f32::NAN),
             nth: 0,
-            tolerance: 0.1,
-            prev_endpoint_id: EndpointId(std::u32::MAX),
+            tolerance,
+            prev_endpoint_id: EndpointId(u32::MAX),
             validator: DebugValidator::new(),
         }
     }
@@ -274,7 +275,7 @@ impl EventQueue {
 
     pub(crate) fn clear(&mut self) {
         self.events.clear();
-        self.first = 0;
+        self.first = INVALID_EVENT_ID;
         self.sorted = false;
     }
 
@@ -293,9 +294,9 @@ impl EventQueue {
         self.events[id as usize].next_sibling
     }
 
-    // TODO: we should be able to simplify this and just compare with INVALID_EVENT_ID
+    /// Returns whether or not the given event ID is valid.
     pub(crate) fn valid_id(&self, id: TessEventId) -> bool {
-        (id as usize) < self.events.len()
+        id != INVALID_EVENT_ID
     }
 
     /// Returns the position of a given event in the queue.
@@ -412,26 +413,26 @@ impl EventQueue {
         current_sibling
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, feature = "std"))]
     fn log(&self) {
         let mut iter_count = self.events.len() * self.events.len();
 
-        println!("--");
+        std::println!("--");
         let mut current = self.first;
         while (current as usize) < self.events.len() {
             assert!(iter_count > 0);
             iter_count -= 1;
 
-            print!("[");
+            std::print!("[");
             let mut current_sibling = current;
             while (current_sibling as usize) < self.events.len() {
-                print!("{:?},", self.events[current_sibling as usize].position);
+                std::print!("{:?},", self.events[current_sibling as usize].position);
                 current_sibling = self.events[current_sibling as usize].next_sibling;
             }
-            print!("]  ");
+            std::print!("]  ");
             current = self.events[current as usize].next_event;
         }
-        println!("\n--");
+        std::println!("\n--");
     }
 
     fn assert_sorted(&self) {
@@ -464,20 +465,13 @@ pub struct EventQueueBuilder {
     validator: DebugValidator,
 }
 
-impl Default for EventQueueBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl EventQueueBuilder {
-    // TODO: this should take the tolerance as parameter.
-    pub fn new() -> Self {
-        EventQueue::new().into_builder()
+    pub fn new(tolerance: f32) -> Self {
+        EventQueue::new().into_builder(tolerance)
     }
 
-    pub fn with_capacity(cap: usize) -> Self {
-        EventQueue::with_capacity(cap).into_builder()
+    pub fn with_capacity(cap: usize, tolerance: f32) -> Self {
+        EventQueue::with_capacity(cap).into_builder(tolerance)
     }
 
     pub fn set_tolerance(&mut self, tolerance: f32) {
@@ -496,12 +490,12 @@ impl EventQueueBuilder {
         &mut self,
         tolerance: f32,
         sweep_orientation: Orientation,
-        path: impl Iterator<Item = PathEvent>,
+        path: impl IntoIterator<Item = PathEvent>,
     ) {
         self.reset();
 
         self.tolerance = tolerance;
-        let endpoint_id = EndpointId(std::u32::MAX);
+        let endpoint_id = EndpointId(u32::MAX);
         match sweep_orientation {
             Orientation::Vertical => {
                 for evt in path {
@@ -566,7 +560,7 @@ impl EventQueueBuilder {
         &mut self,
         tolerance: f32,
         sweep_orientation: Orientation,
-        path_events: impl Iterator<Item = IdEvent>,
+        path_events: impl IntoIterator<Item = IdEvent>,
         points: &impl PositionStore,
     ) {
         self.reset();
@@ -704,25 +698,23 @@ impl EventQueueBuilder {
     #[allow(clippy::too_many_arguments)]
     fn add_edge(
         &mut self,
-        from: Point,
-        to: Point,
+        edge: &LineSegment<f32>,
         mut winding: i16,
         from_id: EndpointId,
         to_id: EndpointId,
         mut t0: f32,
         mut t1: f32,
     ) {
-        if from == to {
+        if edge.from == edge.to {
             return;
         }
 
-        let mut evt_pos = from;
-        let mut evt_to = to;
-        if is_after(evt_pos, to) {
+        let mut evt_pos = edge.from;
+        let mut evt_to = edge.to;
+        if is_after(evt_pos, edge.to) {
             evt_to = evt_pos;
-            evt_pos = to;
+            evt_pos = edge.to;
             swap(&mut t0, &mut t1);
-            //swap(&mut from_id, &mut to_id);
             winding *= -1;
         }
 
@@ -755,7 +747,14 @@ impl EventQueueBuilder {
             self.second = to;
         }
 
-        self.add_edge(from, to, 1, self.prev_endpoint_id, to_id, t0, t1);
+        self.add_edge(
+            &LineSegment { from, to },
+            1,
+            self.prev_endpoint_id,
+            to_id,
+            t0,
+            t1,
+        );
 
         self.prev = self.current;
         self.prev_endpoint_id = to_id;
@@ -786,31 +785,27 @@ impl EventQueueBuilder {
             winding = -1;
         }
 
-        let mut t0 = 0.0;
         let mut prev = segment.from;
-        let mut from = segment.from;
         let mut first = None;
         let is_first_edge = self.nth == 0;
-        segment.for_each_flattened_with_t(self.tolerance, &mut |to, t1| {
-            if from == to {
+        segment.for_each_flattened_with_t(self.tolerance, &mut |line, t| {
+            if line.from == line.to {
                 return;
             }
 
-            if first == None {
-                first = Some(to)
+            if first.is_none() {
+                first = Some(line.to)
             // We can't call vertex(prev, from, to) in the first iteration
             // because if we flipped the curve, we don't have a proper value for
             // the previous vertex yet.
             // We'll handle it after the loop.
-            } else if is_after(from, to) && is_after(from, prev) {
-                self.vertex_event_on_curve(from, t0, self.prev_endpoint_id, to_id);
+            } else if is_after(line.from, line.to) && is_after(line.from, prev) {
+                self.vertex_event_on_curve(line.from, t.start, self.prev_endpoint_id, to_id);
             }
 
-            self.add_edge(from, to, winding, self.prev_endpoint_id, to_id, t0, t1);
+            self.add_edge(line, winding, self.prev_endpoint_id, to_id, t.start, t.end);
 
-            t0 = t1;
-            prev = from;
-            from = to;
+            prev = line.from;
         });
 
         if let Some(first) = first {
@@ -866,31 +861,27 @@ impl EventQueueBuilder {
             winding = -1;
         }
 
-        let mut t0 = 0.0;
         let mut prev = segment.from;
-        let mut from = segment.from;
         let mut first = None;
         let is_first_edge = self.nth == 0;
-        segment.for_each_flattened_with_t(self.tolerance, &mut |to, t1| {
-            if from == to {
+        segment.for_each_flattened_with_t(self.tolerance, &mut |line, t| {
+            if line.from == line.to {
                 return;
             }
 
-            if first == None {
-                first = Some(to)
+            if first.is_none() {
+                first = Some(line.to)
             // We can't call vertex(prev, from, to) in the first iteration
             // because if we flipped the curve, we don't have a proper value for
             // the previous vertex yet.
             // We'll handle it after the loop.
-            } else if is_after(from, to) && is_after(from, prev) {
-                self.vertex_event_on_curve(from, t0, self.prev_endpoint_id, to_id);
+            } else if is_after(line.from, line.to) && is_after(line.from, prev) {
+                self.vertex_event_on_curve(line.from, t.start, self.prev_endpoint_id, to_id);
             }
 
-            self.add_edge(from, to, winding, self.prev_endpoint_id, to_id, t0, t1);
+            self.add_edge(line, winding, self.prev_endpoint_id, to_id, t.start, t.end);
 
-            t0 = t1;
-            prev = from;
-            from = to;
+            prev = line.from;
         });
 
         if let Some(first) = first {

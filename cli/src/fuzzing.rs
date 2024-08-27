@@ -1,11 +1,9 @@
-use crate::commands::{FuzzCmd, Tessellator};
+use crate::commands::FuzzCmd;
 use lyon::algorithms::hatching::*;
 use lyon::extra::debugging::find_reduced_test_case;
 use lyon::geom::LineSegment;
 use lyon::math::*;
-use lyon::path::traits::PathBuilder;
 use lyon::path::Path;
-use lyon::tess2;
 use lyon::tessellation::geometry_builder::NoOutput;
 use lyon::tessellation::{FillTessellator, StrokeTessellator};
 use std::cmp::{max, min};
@@ -58,38 +56,26 @@ pub fn run(cmd: FuzzCmd) -> bool {
         }
     );
     if let Some(num) = cmd.min_points {
-        println!("minimum number of points per path: {}", num);
+        println!("minimum number of points per path: {num}");
     }
     if let Some(num) = cmd.max_points {
-        println!("maximum number of points per path: {}", num);
+        println!("maximum number of points per path: {num}");
     }
     println!("----");
     loop {
         let path = generate_path(&cmd, i);
         if let Some(options) = cmd.tess.fill {
-            let status = ::std::panic::catch_unwind(|| match cmd.tess.tessellator {
-                Tessellator::Default => {
-                    let result =
-                        FillTessellator::new().tessellate(&path, &options, &mut NoOutput::new());
-                    if !cmd.ignore_errors {
-                        result.unwrap();
-                    }
-                }
-                Tessellator::Tess2 => {
-                    let result = tess2::FillTessellator::new().tessellate(
-                        &path,
-                        &options,
-                        &mut NoOutput::new(),
-                    );
-                    if !cmd.ignore_errors {
-                        result.unwrap();
-                    }
+            let status = ::std::panic::catch_unwind(|| {
+                let result =
+                    FillTessellator::new().tessellate(&path, &options, &mut NoOutput::new());
+                if !cmd.ignore_errors {
+                    result.unwrap();
                 }
             });
 
             if status.is_err() {
                 println!(" !! Error while tessellating");
-                println!("    Path #{}", i);
+                println!("    Path #{i}");
                 find_reduced_test_case(path.as_slice(), &|path: Path| {
                     FillTessellator::new()
                         .tessellate(&path, &options, &mut NoOutput::new())
@@ -143,7 +129,7 @@ pub fn run(cmd: FuzzCmd) -> bool {
 
         i += 1;
         if i % 500 == 0 {
-            println!(" -- tested {} paths", i);
+            println!(" -- tested {i} paths");
         }
     }
 }

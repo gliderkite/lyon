@@ -3,7 +3,6 @@
 use crate::geom::{CubicBezierSegment, Line, LineSegment, QuadraticBezierSegment};
 use crate::math::{point, vector, Point, Vector};
 use crate::path::PathEvent;
-use std::f32;
 
 pub struct Ray {
     pub origin: Point,
@@ -22,7 +21,7 @@ pub struct Hit {
 /// Find the closest collision between a ray and the path.
 pub fn raycast_path<Iter>(ray: &Ray, path: Iter, tolerance: f32) -> Option<Hit>
 where
-    Iter: Iterator<Item = PathEvent>,
+    Iter: IntoIterator<Item = PathEvent>,
 {
     let ray_len = ray.direction.square_length();
     if ray_len == 0.0 || ray_len.is_nan() {
@@ -55,11 +54,12 @@ where
                 );
             }
             PathEvent::Quadratic { from, ctrl, to } => {
-                let mut prev = from;
-                QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(tolerance, &mut |p| {
-                    test_segment(&mut state, &LineSegment { from: prev, to: p });
-                    prev = p;
-                });
+                QuadraticBezierSegment { from, ctrl, to }.for_each_flattened(
+                    tolerance,
+                    &mut |line| {
+                        test_segment(&mut state, line);
+                    },
+                );
             }
             PathEvent::Cubic {
                 from,
@@ -67,16 +67,14 @@ where
                 ctrl2,
                 to,
             } => {
-                let mut prev = from;
                 CubicBezierSegment {
                     from,
                     ctrl1,
                     ctrl2,
                     to,
                 }
-                .for_each_flattened(tolerance, &mut |p| {
-                    test_segment(&mut state, &LineSegment { from: prev, to: p });
-                    prev = p;
+                .for_each_flattened(tolerance, &mut |line| {
+                    test_segment(&mut state, line);
                 });
             }
         }

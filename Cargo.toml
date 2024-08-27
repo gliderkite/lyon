@@ -4,17 +4,15 @@ members = [
     "crates/path",
     "crates/tessellation",
     "crates/algorithms",
-    "crates/tess2",
     "crates/geom",
     "crates/extra",
-    "crates/svg",
     "cli",
     "wasm_test",
     "examples/wgpu",
     "examples/wgpu_svg",
     "bench/tess",
     "bench/path",
-    "bench/geom"
+    "bench/geom",
 ]
 
 exclude = [
@@ -25,6 +23,8 @@ exclude = [
     "bench/*",
     "cli/*",
 ]
+
+resolver = "2"
 
 # Uncomment this when profiling.
 #[profile.release]

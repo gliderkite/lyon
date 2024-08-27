@@ -3,17 +3,16 @@ use lyon::math::Point;
 use lyon::path::PathEvent;
 use lyon::tessellation::geometry_builder::*;
 use lyon::tessellation::{self, FillOptions, FillTessellator, StrokeOptions, StrokeTessellator};
-use usvg::prelude::*;
+use usvg::*;
+use wgpu::include_wgsl;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
-use winit::window::Window;
+use winit::window::{Window, WindowBuilder};
 
 use futures::executor::block_on;
 
 use wgpu::util::DeviceExt;
-
-use std::f64::NAN;
 
 const WINDOW_SIZE: f32 = 800.0;
 
@@ -45,9 +44,9 @@ fn main() {
             Arg::with_name("MSAA")
                 .long("msaa")
                 .short("m")
-                .help("Sets MSAA sample count (integer)")
+                .help("Enable msaa")
                 .value_name("SAMPLES")
-                .takes_value(true)
+                .takes_value(false)
                 .required(false),
         )
         .arg(
@@ -68,17 +67,7 @@ fn main() {
         )
         .get_matches();
 
-    let msaa_samples = if let Some(msaa) = app.value_of("MSAA") {
-        match msaa.parse::<u32>() {
-            Ok(n) => n.max(1),
-            Err(_) => {
-                println!("ERROR: `{}` is not a number", msaa);
-                std::process::exit(1);
-            }
-        }
-    } else {
-        1
-    };
+    let msaa_samples = if app.is_present("MSAA") { 4 } else { 1 };
 
     // Parse and tessellate the geometry
 
@@ -90,87 +79,36 @@ fn main() {
 
     let opt = usvg::Options::default();
     let file_data = std::fs::read(filename).unwrap();
-    let rtree = usvg::Tree::from_data(&file_data, &opt).unwrap();
+    let db = usvg::fontdb::Database::new();
+    let rtree = usvg::Tree::from_data(&file_data, &opt, &db).unwrap();
     let mut transforms = Vec::new();
     let mut primitives = Vec::new();
 
     let mut prev_transform = usvg::Transform {
-        a: NAN,
-        b: NAN,
-        c: NAN,
-        d: NAN,
-        e: NAN,
-        f: NAN,
+        sx: f32::NAN,
+        kx: f32::NAN,
+        ky: f32::NAN,
+        sy: f32::NAN,
+        tx: f32::NAN,
+        ty: f32::NAN,
     };
-    let view_box = rtree.svg_node().view_box;
-    for node in rtree.root().descendants() {
-        if let usvg::NodeKind::Path(ref p) = *node.borrow() {
-            let t = node.transform();
-            if t != prev_transform {
-                transforms.push(GpuTransform {
-                    data0: [t.a as f32, t.b as f32, t.c as f32, t.d as f32],
-                    data1: [t.e as f32, t.f as f32, 0.0, 0.0],
-                });
-            }
-            prev_transform = t;
-
-            let transform_idx = transforms.len() as u32 - 1;
-
-            if let Some(ref fill) = p.fill {
-                // fall back to always use color fill
-                // no gradients (yet?)
-                let color = match fill.paint {
-                    usvg::Paint::Color(c) => c,
-                    _ => FALLBACK_COLOR,
-                };
-
-                primitives.push(GpuPrimitive::new(
-                    transform_idx,
-                    color,
-                    fill.opacity.value() as f32,
-                ));
-
-                fill_tess
-                    .tessellate(
-                        convert_path(p),
-                        &FillOptions::tolerance(0.01),
-                        &mut BuffersBuilder::new(
-                            &mut mesh,
-                            VertexCtor {
-                                prim_id: primitives.len() as u32 - 1,
-                            },
-                        ),
-                    )
-                    .expect("Error during tesselation!");
-            }
-
-            if let Some(ref stroke) = p.stroke {
-                let (stroke_color, stroke_opts) = convert_stroke(stroke);
-                primitives.push(GpuPrimitive::new(
-                    transform_idx,
-                    stroke_color,
-                    stroke.opacity.value() as f32,
-                ));
-                let _ = stroke_tess.tessellate(
-                    convert_path(p),
-                    &stroke_opts.with_tolerance(0.01),
-                    &mut BuffersBuilder::new(
-                        &mut mesh,
-                        VertexCtor {
-                            prim_id: primitives.len() as u32 - 1,
-                        },
-                    ),
-                );
-            }
-        }
-    }
+    let view_box = rtree.view_box();
+    collect_geom(
+        &rtree.root(),
+        &mut prev_transform,
+        &mut transforms,
+        &mut primitives,
+        &mut fill_tess,
+        &mut mesh,
+        &mut stroke_tess,
+    );
 
     if app.is_present("TESS_ONLY") {
         return;
     }
 
     println!(
-        "Finished tesselation: {} vertices, {} indices",
+        "Finished tessellation: {} vertices, {} indices",
         mesh.vertices.len(),
         mesh.indices.len()
     );
@@ -197,12 +135,14 @@ fn main() {
         window_size: PhysicalSize::new(width as u32, height as u32),
         wireframe: false,
         size_changed: true,
+        render: false,
     };
 
     let event_loop = EventLoop::new();
-    let window = Window::new(&event_loop).unwrap();
+    let window_builder = WindowBuilder::new().with_inner_size(scene.window_size);
+    let window = window_builder.build(&event_loop).unwrap();
 
-    let instance = wgpu::Instance::new(wgpu::BackendBit::PRIMARY);
+    let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
 
     let surface = unsafe { instance.create_surface(&window) };
 
@@ -210,6 +150,7 @@ fn main() {
     let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
         compatible_surface: Some(&surface),
+        force_fallback_adapter: false,
     }))
     .unwrap();
 
@@ -217,7 +158,7 @@ fn main() {
     let (device, queue) = block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
             label: None,
-            features: wgpu::Features::default(),
+            features: wgpu::Features::default() | wgpu::Features::POLYGON_MODE_LINE,
             limits: wgpu::Limits::default(),
         },
         // trace_path can be used for API call tracing
@@ -227,63 +168,65 @@ fn main() {
 
     let size = window.inner_size();
 
-    let mut swap_chain_desc = wgpu::SwapChainDescriptor {
-        usage: wgpu::TextureUsage::RENDER_ATTACHMENT,
+    let mut surface_desc = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: wgpu::TextureFormat::Bgra8Unorm,
         width: size.width,
         height: size.height,
-        present_mode: wgpu::PresentMode::Mailbox,
+        present_mode: wgpu::PresentMode::AutoVsync,
     };
 
-    let mut swap_chain = None;
     let mut msaa_texture = None;
 
     let vbo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: bytemuck::cast_slice(&mesh.vertices),
-        usage: wgpu::BufferUsage::VERTEX,
+        usage: wgpu::BufferUsages::VERTEX,
     });
 
     let ibo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: bytemuck::cast_slice(&mesh.indices),
-        usage: wgpu::BufferUsage::INDEX,
+        usage: wgpu::BufferUsages::INDEX,
     });
 
-    let prim_buffer_byte_size = (MAX_PRIMITIVES * std::mem::size_of::<GpuPrimitive>()) as u64;
-    let transform_buffer_byte_size = (MAX_TRANSFORMS * std::mem::size_of::<GpuTransform>()) as u64;
+    let prim_buffer_byte_size = (primitives.len() * std::mem::size_of::<GpuPrimitive>()) as u64;
+    let transform_buffer_byte_size =
+        (transforms.len() * std::mem::size_of::<GpuTransform>()) as u64;
     let globals_buffer_byte_size = std::mem::size_of::<GpuGlobals>() as u64;
 
-    let prims_ubo = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Prims ubo"),
+    let prims_ssbo = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Prims ssbo"),
         size: prim_buffer_byte_size,
-        usage: wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST,
+        usage: wgpu::BufferUsages::VERTEX
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
-    let transforms_ubo = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Transforms ubo"),
+    let transforms_ssbo = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Transforms ssbo"),
         size: transform_buffer_byte_size,
-        usage: wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST,
+        usage: wgpu::BufferUsages::VERTEX
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
     let globals_ubo = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("Globals ubo"),
         size: globals_buffer_byte_size,
-        usage: wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let vs_module =
-        &device.create_shader_module(&wgpu::include_spirv!("../shaders/geometry.vert.spv"));
-    let fs_module =
-        &device.create_shader_module(&wgpu::include_spirv!("../shaders/geometry.frag.spv"));
+    let vs_module = device.create_shader_module(include_wgsl!("../shaders/geometry.vs.wgsl"));
+    let fs_module = device.create_shader_module(include_wgsl!("../shaders/geometry.fs.wgsl"));
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Bind group layout"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStage::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -293,9 +236,9 @@ fn main() {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
-                visibility: wgpu::ShaderStage::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(prim_buffer_byte_size),
                 },
@@ -303,9 +246,9 @@ fn main() {
             },
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
-                visibility: wgpu::ShaderStage::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(transform_buffer_byte_size),
                 },
@@ -324,11 +267,11 @@ fn main() {
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::Buffer(prims_ubo.as_entire_buffer_binding()),
+                resource: wgpu::BindingResource::Buffer(prims_ssbo.as_entire_buffer_binding()),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: wgpu::BindingResource::Buffer(transforms_ubo.as_entire_buffer_binding()),
+                resource: wgpu::BindingResource::Buffer(transforms_ssbo.as_entire_buffer_binding()),
             },
         ],
     });
@@ -347,7 +290,7 @@ fn main() {
             entry_point: "main",
             buffers: &[wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<GpuVertex>() as u64,
-                step_mode: wgpu::InputStepMode::Vertex,
+                step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &[
                     wgpu::VertexAttribute {
                         offset: 0,
@@ -365,13 +308,11 @@ fn main() {
         fragment: Some(wgpu::FragmentState {
             module: &fs_module,
             entry_point: "main",
-            targets: &[
-                wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Bgra8Unorm,
-                    blend: None,
-                    write_mask: wgpu::ColorWrite::ALL,
-                },
-            ],
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
         }),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
@@ -379,7 +320,7 @@ fn main() {
             front_face: wgpu::FrontFace::Ccw,
             strip_index_format: None,
             cull_mode: None,
-            clamp_depth: false,
+            unclipped_depth: false,
             conservative: false,
         },
         depth_stencil: None,
@@ -388,63 +329,72 @@ fn main() {
             mask: !0,
             alpha_to_coverage_enabled: false,
         },
+        multiview: None,
     };
 
     let render_pipeline = device.create_render_pipeline(&render_pipeline_descriptor);
 
     // TODO: this isn't what we want: we'd need the equivalent of VK_POLYGON_MODE_LINE,
     // but it doesn't seem to be exposed by wgpu?
-    render_pipeline_descriptor.primitive.topology = wgpu::PrimitiveTopology::LineList;
+    render_pipeline_descriptor.primitive.polygon_mode = wgpu::PolygonMode::Line;
     let wireframe_render_pipeline = device.create_render_pipeline(&render_pipeline_descriptor);
 
-    queue.write_buffer(&transforms_ubo, 0, bytemuck::cast_slice(&transforms));
+    queue.write_buffer(&transforms_ssbo, 0, bytemuck::cast_slice(&transforms));
 
-    queue.write_buffer(&prims_ubo, 0, bytemuck::cast_slice(&primitives));
+    queue.write_buffer(&prims_ssbo, 0, bytemuck::cast_slice(&primitives));
+
+    window.request_redraw();
 
     // The main loop.
 
     event_loop.run(move |event, _, control_flow| {
-        if update_inputs(event, control_flow, &mut scene) {
+        if !update_inputs(event, &window, control_flow, &mut scene) {
             // keep polling inputs.
             return;
         }
-
-        if scene.size_changed || swap_chain.is_none() {
+        if scene.size_changed {
             scene.size_changed = false;
             let physical = scene.window_size;
-            swap_chain_desc.width = physical.width;
-            swap_chain_desc.height = physical.height;
-            swap_chain = Some(device.create_swap_chain(&surface, &swap_chain_desc));
+            surface_desc.width = physical.width;
+            surface_desc.height = physical.height;
+            surface.configure(&device, &surface_desc);
             if msaa_samples > 1 {
                 msaa_texture = Some(
                     device
                         .create_texture(&wgpu::TextureDescriptor {
                             label: Some("Multisampled frame descriptor"),
                             size: wgpu::Extent3d {
-                                width: swap_chain_desc.width,
-                                height: swap_chain_desc.height,
+                                width: surface_desc.width,
+                                height: surface_desc.height,
                                 depth_or_array_layers: 1,
                             },
                             mip_level_count: 1,
                             sample_count: msaa_samples,
                             dimension: wgpu::TextureDimension::D2,
-                            format: swap_chain_desc.format,
-                            usage: wgpu::TextureUsage::RENDER_ATTACHMENT,
+                            format: surface_desc.format,
+                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                         })
                         .create_view(&wgpu::TextureViewDescriptor::default()),
                 );
             }
         }
 
-        let swap_chain = swap_chain.as_mut().unwrap();
+        if !scene.render {
+            return;
+        }
+        scene.render = false;
 
-        let frame = match swap_chain.get_current_frame() {
+        let frame = match surface.get_current_texture() {
             Ok(frame) => frame,
             Err(e) => {
-                println!("Swap-chain error: {:?}", e);
+                println!("Swap-chain error: {e:?}");
                 return;
             }
         };
+
+        let frame_view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Encoder"),
@@ -464,18 +414,18 @@ fn main() {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
-                color_attachments: &[wgpu::RenderPassColorAttachment {
-                    view: msaa_texture.as_ref().unwrap_or(&frame.output.view),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: msaa_texture.as_ref().unwrap_or(&frame_view),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                         store: true,
                     },
                     resolve_target: if msaa_texture.is_some() {
-                        Some(&frame.output.view)
+                        Some(&frame_view)
                     } else {
                         None
                     },
-                }],
+                })],
                 depth_stencil_attachment: None,
             });
 
@@ -492,7 +442,90 @@ fn main() {
         }
 
         queue.submit(Some(encoder.finish()));
+        frame.present();
     });
+}
+
+fn collect_geom(
+    group: &Group,
+    prev_transform: &mut Transform,
+    transforms: &mut Vec<GpuTransform>,
+    primitives: &mut Vec<GpuPrimitive>,
+    fill_tess: &mut FillTessellator,
+    mesh: &mut VertexBuffers<GpuVertex, u32>,
+    stroke_tess: &mut StrokeTessellator,
+) {
+    for node in group.children() {
+        if let usvg::Node::Group(group) = node {
+            collect_geom(
+                group,
+                prev_transform,
+                transforms,
+                primitives,
+                fill_tess,
+                mesh,
+                stroke_tess,
+            )
+        } else if let usvg::Node::Path(p) = &node {
+            let t = node.abs_transform();
+            if t != *prev_transform {
+                transforms.push(GpuTransform {
+                    data0: [t.sx, t.kx, t.ky, t.sy],
+                    data1: [t.tx, t.ty, 0.0, 0.0],
+                });
+            }
+            *prev_transform = t;
+
+            let transform_idx = transforms.len() as u32 - 1;
+
+            if let Some( fill) = p.fill() {
+                // fall back to always use color fill
+                // no gradients (yet?)
+                let color = match fill.paint() {
+                    usvg::Paint::Color(c) => *c,
+                    _ => FALLBACK_COLOR,
+                };
+
+                primitives.push(GpuPrimitive::new(
+                    transform_idx,
+                    color,
+                    fill.opacity().get(),
+                ));
+
+                fill_tess
+                    .tessellate(
+                        convert_path(p),
+                        &FillOptions::tolerance(0.01),
+                        &mut BuffersBuilder::new(
+                            mesh,
+                            VertexCtor {
+                                prim_id: primitives.len() as u32 - 1,
+                            },
+                        ),
+                    )
+                    .expect("Error during tessellation!");
+            }
+
+            if let Some(stroke) = p.stroke() {
+                let (stroke_color, stroke_opts) = convert_stroke(stroke);
+                primitives.push(GpuPrimitive::new(
+                    transform_idx,
+                    stroke_color,
+                    stroke.opacity().get(),
+                ));
+                let _ = stroke_tess.tessellate(
+                    convert_path(p),
+                    &stroke_opts.with_tolerance(0.01),
+                    &mut BuffersBuilder::new(
+                        mesh,
+                        VertexCtor {
+                            prim_id: primitives.len() as u32 - 1,
+                        },
+                    ),
+                );
+            }
+        }
+    }
 }
 
 #[repr(C)]
@@ -562,10 +595,6 @@ impl StrokeVertexConstructor<GpuVertex> for VertexCtor {
     }
 }
 
-// These mush match the uniform buffer sizes in the vertex shader.
-pub static MAX_PRIMITIVES: usize = 512;
-pub static MAX_TRANSFORMS: usize = 512;
-
 // Default scene has all values set to zero
 #[derive(Copy, Clone, Debug)]
 pub struct SceneGlobals {
@@ -574,16 +603,19 @@ pub struct SceneGlobals {
     pub window_size: PhysicalSize<u32>,
     pub wireframe: bool,
     pub size_changed: bool,
+    pub render: bool,
 }
 
 fn update_inputs(
     event: Event<()>,
+    window: &Window,
     control_flow: &mut ControlFlow,
     scene: &mut SceneGlobals,
 ) -> bool {
+    let mut redraw = false;
     match event {
-        Event::MainEventsCleared => {
-            return false;
+        Event::RedrawRequested(_) => {
+            scene.render = true;
         }
         Event::WindowEvent {
             event: WindowEvent::Destroyed,
@@ -601,7 +633,8 @@ fn update_inputs(
             ..
         } => {
             scene.window_size = size;
-            scene.size_changed = true
+            scene.size_changed = true;
+            redraw = true;
         }
         Event::WindowEvent {
             event:
@@ -622,24 +655,31 @@ fn update_inputs(
             }
             VirtualKeyCode::PageDown => {
                 scene.zoom *= 0.8;
+                redraw = true;
             }
             VirtualKeyCode::PageUp => {
                 scene.zoom *= 1.25;
+                redraw = true;
             }
             VirtualKeyCode::Left => {
                 scene.pan[0] -= 50.0 / scene.pan[0];
+                redraw = true;
             }
             VirtualKeyCode::Right => {
                 scene.pan[0] += 50.0 / scene.pan[0];
+                redraw = true;
             }
             VirtualKeyCode::Up => {
                 scene.pan[1] += 50.0 / scene.pan[1];
+                redraw = true;
             }
             VirtualKeyCode::Down => {
                 scene.pan[1] -= 50.0 / scene.pan[1];
+                redraw = true;
             }
             VirtualKeyCode::W => {
                 scene.wireframe = !scene.wireframe;
+                redraw = true;
             }
             _key => {}
         },
@@ -650,17 +690,16 @@ fn update_inputs(
 
     *control_flow = ControlFlow::Poll;
 
+    if redraw {
+        window.request_redraw();
+    }
+
     true
 }
 
 /// Some glue between usvg's iterators and lyon's.
-
-fn point(x: &f64, y: &f64) -> Point {
-    Point::new((*x) as f32, (*y) as f32)
-}
-
 pub struct PathConvIter<'a> {
-    iter: std::slice::Iter<'a, usvg::PathSegment>,
+    iter: tiny_skia_path::PathSegmentsIter<'a>,
     prev: Point,
     first: Point,
     needs_end: bool,
@@ -676,12 +715,12 @@ impl<'l> Iterator for PathConvIter<'l> {
 
         let next = self.iter.next();
         match next {
-            Some(usvg::PathSegment::MoveTo { x, y }) => {
+            Some(tiny_skia_path::PathSegment::MoveTo(pt)) => {
                 if self.needs_end {
                     let last = self.prev;
                     let first = self.first;
                     self.needs_end = false;
-                    self.prev = point(x, y);
+                    self.prev = Point::new(pt.x, pt.y);
                     self.deferred = Some(PathEvent::Begin { at: self.prev });
                     self.first = self.prev;
                     Some(PathEvent::End {
@@ -690,39 +729,42 @@ impl<'l> Iterator for PathConvIter<'l> {
                         close: false,
                     })
                 } else {
-                    self.first = point(x, y);
+                    self.first = Point::new(pt.x, pt.y);
                     self.needs_end = true;
                     Some(PathEvent::Begin { at: self.first })
                 }
             }
-            Some(usvg::PathSegment::LineTo { x, y }) => {
+            Some(tiny_skia_path::PathSegment::LineTo(pt)) => {
                 self.needs_end = true;
                 let from = self.prev;
-                self.prev = point(x, y);
+                self.prev = Point::new(pt.x, pt.y);
                 Some(PathEvent::Line {
                     from,
                     to: self.prev,
                 })
             }
-            Some(usvg::PathSegment::CurveTo {
-                x1,
-                y1,
-                x2,
-                y2,
-                x,
-                y,
-            }) => {
+            Some(tiny_skia_path::PathSegment::CubicTo(p1, p2, p0)) => {
                 self.needs_end = true;
                 let from = self.prev;
-                self.prev = point(x, y);
+                self.prev = Point::new(p0.x, p0.y);
                 Some(PathEvent::Cubic {
                     from,
-                    ctrl1: point(x1, y1),
-                    ctrl2: point(x2, y2),
+                    ctrl1: Point::new(p1.x, p1.y),
+                    ctrl2: Point::new(p2.x, p2.y),
                     to: self.prev,
                 })
             }
-            Some(usvg::PathSegment::ClosePath) => {
+            Some(tiny_skia_path::PathSegment::QuadTo(p1, p0)) => {
+                self.needs_end = true;
+                let from = self.prev;
+                self.prev = Point::new(p1.x, p1.y);
+                Some(PathEvent::Quadratic {
+                    from,
+                    ctrl: Point::new(p0.x, p0.y),
+                    to: self.prev,
+                })
+            }
+            Some(tiny_skia_path::PathSegment::Close) => {
                 self.needs_end = false;
                 self.prev = self.first;
                 Some(PathEvent::End {
@@ -751,7 +793,7 @@ impl<'l> Iterator for PathConvIter<'l> {
 
 pub fn convert_path(p: &usvg::Path) -> PathConvIter {
     PathConvIter {
-        iter: p.data.iter(),
+        iter: p.data().segments(),
         first: Point::new(0.0, 0.0),
         prev: Point::new(0.0, 0.0),
         deferred: None,
@@ -760,23 +802,24 @@ pub fn convert_path(p: &usvg::Path) -> PathConvIter {
 }
 
 pub fn convert_stroke(s: &usvg::Stroke) -> (usvg::Color, StrokeOptions) {
-    let color = match s.paint {
-        usvg::Paint::Color(c) => c,
+    let color = match s.paint() {
+        usvg::Paint::Color(c) => *c,
         _ => FALLBACK_COLOR,
     };
-    let linecap = match s.linecap {
+    let linecap = match s.linecap() {
         usvg::LineCap::Butt => tessellation::LineCap::Butt,
         usvg::LineCap::Square => tessellation::LineCap::Square,
         usvg::LineCap::Round => tessellation::LineCap::Round,
     };
-    let linejoin = match s.linejoin {
+    let linejoin = match s.linejoin() {
         usvg::LineJoin::Miter => tessellation::LineJoin::Miter,
+        usvg::LineJoin::MiterClip => tessellation::LineJoin::MiterClip,
         usvg::LineJoin::Bevel => tessellation::LineJoin::Bevel,
         usvg::LineJoin::Round => tessellation::LineJoin::Round,
     };
 
     let opt = StrokeOptions::tolerance(0.01)
-        .with_line_width(s.width.value() as f32)
+        .with_line_width(s.width().get())
         .with_line_cap(linecap)
         .with_line_join(linejoin);
 

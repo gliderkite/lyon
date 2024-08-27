@@ -3,11 +3,13 @@
 use crate::builder::*;
 use crate::math::*;
 use crate::path;
-use crate::{EndpointId, PathSlice};
+use crate::{Attributes, EndpointId, PathSlice, NO_ATTRIBUTES};
 
-use std::fmt;
-use std::iter::{FusedIterator, FromIterator, IntoIterator};
-use std::ops::Range;
+use core::fmt;
+use core::iter::{FromIterator, FusedIterator, IntoIterator};
+use core::ops::Range;
+
+use alloc::vec::Vec;
 
 #[derive(Clone, Debug)]
 struct PathDescriptor {
@@ -67,7 +69,9 @@ impl PathBuffer {
     }
 
     #[inline]
-    pub fn iter(&self) -> Iter<'_> { Iter::new(&self.points, &self.verbs, &self.paths) }
+    pub fn iter(&self) -> Iter<'_> {
+        Iter::new(&self.points, &self.verbs, &self.paths)
+    }
 
     #[inline]
     /// Returns the number of paths in the path buffer.
@@ -90,6 +94,7 @@ impl PathBuffer {
     pub fn clear(&mut self) {
         self.points.clear();
         self.verbs.clear();
+        self.paths.clear();
     }
 
     #[inline]
@@ -108,18 +113,22 @@ impl fmt::Debug for PathBuffer {
 
 impl<'l> FromIterator<PathSlice<'l>> for PathBuffer {
     fn from_iter<T: IntoIterator<Item = PathSlice<'l>>>(iter: T) -> PathBuffer {
-         iter.into_iter().fold(PathBuffer::new(), |mut buffer, path| {
-             let builder = buffer.builder();
-             path.iter().fold(builder, |mut builder, event| {
-                 builder.path_event(event);
-                 builder
-             }).build();
-             buffer
-         })
+        iter.into_iter()
+            .fold(PathBuffer::new(), |mut buffer, path| {
+                let builder = buffer.builder();
+                path.iter()
+                    .fold(builder, |mut builder, event| {
+                        builder.path_event(event, NO_ATTRIBUTES);
+                        builder
+                    })
+                    .build();
+                buffer
+            })
     }
 }
 
 /// A view on a `PathBuffer`.
+#[derive(Clone)]
 pub struct PathBufferSlice<'l> {
     points: &'l [Point],
     verbs: &'l [path::Verb],
@@ -143,7 +152,9 @@ impl<'l> PathBufferSlice<'l> {
     }
 
     #[inline]
-    pub fn iter(&self) -> Iter<'_> { Iter::new(&self.points, &self.verbs, &self.paths) }
+    pub fn iter(&self) -> Iter<'_> {
+        Iter::new(self.points, self.verbs, self.paths)
+    }
 
     /// Returns the number of paths in the path buffer.
     #[inline]
@@ -168,7 +179,7 @@ impl<'l> fmt::Debug for PathBufferSlice<'l> {
             self.verbs.len(),
         )?;
         for idx in self.indices() {
-            write!(formatter, "#{:?}: ", idx)?;
+            write!(formatter, "#{idx:?}: ")?;
             self.get(idx).fmt(formatter)?;
             write!(formatter, ", ")?;
         }
@@ -189,11 +200,11 @@ pub struct Builder<'l> {
 impl<'l> Builder<'l> {
     #[inline]
     fn new(buffer: &'l mut PathBuffer) -> Self {
-        let mut builder = path::Builder::new();
-        std::mem::swap(&mut buffer.points, &mut builder.points);
-        std::mem::swap(&mut buffer.verbs, &mut builder.verbs);
-        let points_start = builder.points.len() as u32;
-        let verbs_start = builder.verbs.len() as u32;
+        let mut builder = path::Path::builder();
+        core::mem::swap(&mut buffer.points, &mut builder.inner_mut().points);
+        core::mem::swap(&mut buffer.verbs, &mut builder.inner_mut().verbs);
+        let points_start = builder.inner().points.len() as u32;
+        let verbs_start = builder.inner().verbs.len() as u32;
         Builder {
             buffer,
             builder,
@@ -204,13 +215,14 @@ impl<'l> Builder<'l> {
 
     #[inline]
     pub fn with_attributes(self, num_attributes: usize) -> BuilderWithAttributes<'l> {
-        assert_eq!(self.builder.verbs.len(), self.verbs_start as usize);
+        assert_eq!(self.builder.inner().verbs.len(), self.verbs_start as usize);
 
         BuilderWithAttributes {
             buffer: self.buffer,
             builder: path::BuilderWithAttributes {
-                builder: self.builder,
+                builder: self.builder.into_inner(),
                 num_attributes,
+                first_attributes: alloc::vec![0.0; num_attributes],
             },
             points_start: self.points_start,
             verbs_start: self.verbs_start,
@@ -219,10 +231,13 @@ impl<'l> Builder<'l> {
 
     #[inline]
     pub fn build(mut self) -> usize {
-        let points_end = self.builder.points.len() as u32;
-        let verbs_end = self.builder.verbs.len() as u32;
-        std::mem::swap(&mut self.builder.points, &mut self.buffer.points);
-        std::mem::swap(&mut self.builder.verbs, &mut self.buffer.verbs);
+        let points_end = self.builder.inner().points.len() as u32;
+        let verbs_end = self.builder.inner().verbs.len() as u32;
+        core::mem::swap(
+            &mut self.builder.inner_mut().points,
+            &mut self.buffer.points,
+        );
+        core::mem::swap(&mut self.builder.inner_mut().verbs, &mut self.buffer.verbs);
 
         let index = self.buffer.paths.len();
         self.buffer.paths.push(PathDescriptor {
@@ -278,7 +293,12 @@ impl<'l> Builder<'l> {
 
 impl<'l> PathBuilder for Builder<'l> {
     #[inline]
-    fn begin(&mut self, at: Point) -> EndpointId {
+    fn num_attributes(&self) -> usize {
+        0
+    }
+
+    #[inline]
+    fn begin(&mut self, at: Point, _attributes: Attributes) -> EndpointId {
         self.begin(at)
     }
 
@@ -288,17 +308,28 @@ impl<'l> PathBuilder for Builder<'l> {
     }
 
     #[inline]
-    fn line_to(&mut self, to: Point) -> EndpointId {
+    fn line_to(&mut self, to: Point, _attributes: Attributes) -> EndpointId {
         self.line_to(to)
     }
 
     #[inline]
-    fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point) -> EndpointId {
+    fn quadratic_bezier_to(
+        &mut self,
+        ctrl: Point,
+        to: Point,
+        _attributes: Attributes,
+    ) -> EndpointId {
         self.quadratic_bezier_to(ctrl, to)
     }
 
     #[inline]
-    fn cubic_bezier_to(&mut self, ctrl1: Point, ctrl2: Point, to: Point) -> EndpointId {
+    fn cubic_bezier_to(
+        &mut self,
+        ctrl1: Point,
+        ctrl2: Point,
+        to: Point,
+        _attributes: Attributes,
+    ) -> EndpointId {
         self.cubic_bezier_to(ctrl1, ctrl2, to)
     }
 
@@ -326,9 +357,9 @@ pub struct BuilderWithAttributes<'l> {
 impl<'l> BuilderWithAttributes<'l> {
     #[inline]
     pub fn new(buffer: &'l mut PathBuffer, num_attributes: usize) -> Self {
-        let mut builder = path::Builder::new();
-        std::mem::swap(&mut buffer.points, &mut builder.points);
-        std::mem::swap(&mut buffer.verbs, &mut builder.verbs);
+        let mut builder = path::Path::builder().into_inner();
+        core::mem::swap(&mut buffer.points, &mut builder.points);
+        core::mem::swap(&mut buffer.verbs, &mut builder.verbs);
         let points_start = builder.points.len() as u32;
         let verbs_start = builder.verbs.len() as u32;
         BuilderWithAttributes {
@@ -336,6 +367,7 @@ impl<'l> BuilderWithAttributes<'l> {
             builder: path::BuilderWithAttributes {
                 builder,
                 num_attributes,
+                first_attributes: alloc::vec![0.0; num_attributes],
             },
             points_start,
             verbs_start,
@@ -346,8 +378,8 @@ impl<'l> BuilderWithAttributes<'l> {
     pub fn build(mut self) -> usize {
         let points_end = self.builder.builder.points.len() as u32;
         let verbs_end = self.builder.builder.verbs.len() as u32;
-        std::mem::swap(&mut self.builder.builder.points, &mut self.buffer.points);
-        std::mem::swap(&mut self.builder.builder.verbs, &mut self.buffer.verbs);
+        core::mem::swap(&mut self.builder.builder.points, &mut self.buffer.points);
+        core::mem::swap(&mut self.builder.builder.verbs, &mut self.buffer.verbs);
 
         let index = self.buffer.paths.len();
         self.buffer.paths.push(PathDescriptor {
@@ -367,7 +399,7 @@ impl<'l> BuilderWithAttributes<'l> {
     }
 
     #[inline]
-    pub fn begin(&mut self, at: Point, attributes: &[f32]) -> EndpointId {
+    pub fn begin(&mut self, at: Point, attributes: Attributes) -> EndpointId {
         let id = self.builder.begin(at, attributes);
         self.adjust_id(id)
     }
@@ -378,7 +410,7 @@ impl<'l> BuilderWithAttributes<'l> {
     }
 
     #[inline]
-    pub fn line_to(&mut self, to: Point, attributes: &[f32]) -> EndpointId {
+    pub fn line_to(&mut self, to: Point, attributes: Attributes) -> EndpointId {
         let id = self.builder.line_to(to, attributes);
         self.adjust_id(id)
     }
@@ -388,7 +420,7 @@ impl<'l> BuilderWithAttributes<'l> {
         &mut self,
         ctrl: Point,
         to: Point,
-        attributes: &[f32],
+        attributes: Attributes,
     ) -> EndpointId {
         let id = self.builder.quadratic_bezier_to(ctrl, to, attributes);
         self.adjust_id(id)
@@ -400,7 +432,7 @@ impl<'l> BuilderWithAttributes<'l> {
         ctrl1: Point,
         ctrl2: Point,
         to: Point,
-        attributes: &[f32],
+        attributes: Attributes,
     ) -> EndpointId {
         let id = self.builder.cubic_bezier_to(ctrl1, ctrl2, to, attributes);
         self.adjust_id(id)
@@ -412,16 +444,76 @@ impl<'l> BuilderWithAttributes<'l> {
     }
 }
 
+impl<'l> PathBuilder for BuilderWithAttributes<'l> {
+    #[inline]
+    fn num_attributes(&self) -> usize {
+        self.builder.num_attributes()
+    }
+
+    #[inline]
+    fn begin(&mut self, at: Point, attributes: Attributes) -> EndpointId {
+        self.begin(at, attributes)
+    }
+
+    #[inline]
+    fn end(&mut self, close: bool) {
+        self.end(close);
+    }
+
+    #[inline]
+    fn line_to(&mut self, to: Point, attributes: Attributes) -> EndpointId {
+        self.line_to(to, attributes)
+    }
+
+    #[inline]
+    fn quadratic_bezier_to(
+        &mut self,
+        ctrl: Point,
+        to: Point,
+        attributes: Attributes,
+    ) -> EndpointId {
+        self.quadratic_bezier_to(ctrl, to, attributes)
+    }
+
+    #[inline]
+    fn cubic_bezier_to(
+        &mut self,
+        ctrl1: Point,
+        ctrl2: Point,
+        to: Point,
+        attributes: Attributes,
+    ) -> EndpointId {
+        self.cubic_bezier_to(ctrl1, ctrl2, to, attributes)
+    }
+
+    #[inline]
+    fn reserve(&mut self, endpoints: usize, ctrl_points: usize) {
+        self.reserve(endpoints, ctrl_points);
+    }
+}
+
+impl<'l> Build for BuilderWithAttributes<'l> {
+    type PathType = usize;
+    fn build(self) -> usize {
+        self.build()
+    }
+}
+
 /// Iterator over the paths in a [`PathBufferSlice`].
+#[derive(Clone)]
 pub struct Iter<'l> {
     points: &'l [Point],
     verbs: &'l [path::Verb],
-    paths: ::std::slice::Iter<'l, PathDescriptor>,
+    paths: ::core::slice::Iter<'l, PathDescriptor>,
 }
 
 impl<'l> Iter<'l> {
     fn new(points: &'l [Point], verbs: &'l [path::Verb], paths: &'l [PathDescriptor]) -> Iter<'l> {
-        Iter { points, verbs, paths: paths.iter() }
+        Iter {
+            points,
+            verbs,
+            paths: paths.iter(),
+        }
     }
 }
 

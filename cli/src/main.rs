@@ -16,12 +16,12 @@ use commands::*;
 
 use lyon::algorithms::hatching::{DotOptions, HatchingOptions};
 use lyon::extra::debugging::find_reduced_test_case;
+use lyon::extra::parser::*;
 use lyon::geom::euclid::Angle;
 use lyon::path::Path;
-use lyon::svg::path_utils::build_path;
 use lyon::tessellation::{FillOptions, FillRule, LineCap, LineJoin, Orientation, StrokeOptions};
 use std::fs::File;
-use std::io::{stderr, stdout, Read, Write};
+use std::io::{stdout, Read, Write};
 
 fn main() {
     env_logger::init();
@@ -35,19 +35,19 @@ fn main() {
                 .about("Tessellates a path")
                 .arg(
                     Arg::with_name("DEBUG")
-                        .short("d")
+                        .short('d')
                         .long("debug")
                         .help("Enable debugging"),
                 )
                 .arg(
                     Arg::with_name("COUNT")
-                        .short("c")
+                        .short('c')
                         .long("count")
                         .help("Prints the number of triangles and vertices"),
                 )
                 .arg(
                     Arg::with_name("OUTPUT")
-                        .short("o")
+                        .short('o')
                         .long("output")
                         .help("Sets the output file to use")
                         .value_name("FILE")
@@ -76,7 +76,7 @@ fn main() {
                 .about("Transforms an SVG path")
                 .arg(
                     Arg::with_name("TOLERANCE")
-                        .short("t")
+                        .short('t')
                         .long("tolerance")
                         .help("Sets the tolerance threshold (0.5 by default)")
                         .value_name("TOLERANCE")
@@ -84,19 +84,19 @@ fn main() {
                 )
                 .arg(
                     Arg::with_name("FLATTEN")
-                        .short("f")
+                        .short('f')
                         .long("flatten")
                         .help("Approximates all curves with line segments"),
                 )
                 .arg(
                     Arg::with_name("COUNT")
-                        .short("c")
+                        .short('c')
                         .long("count")
                         .help("Prints the number of vertices"),
                 )
                 .arg(
                     Arg::with_name("OUTPUT")
-                        .short("o")
+                        .short('o')
                         .long("output")
                         .help("Sets the output file to use")
                         .value_name("FILE")
@@ -124,7 +124,7 @@ fn main() {
                 .arg(
                     Arg::with_name("IGNORE_ERRORS")
                         .long("ignore-errors")
-                        .help("Try to continue when encoutering errors unless it is a panic."),
+                        .help("Try to continue when encountering errors unless it is a panic."),
                 ),
         )
         .subcommand(
@@ -133,7 +133,7 @@ fn main() {
                 .arg(
                     Arg::with_name("ANTIALIASING")
                         .long("anti-aliasing")
-                        .help("Sets the anti-aliasing method to use")
+                        .help("Sets the anti-aliasing method to use (msaa or none)")
                         .value_name("ANTIALIASING")
                         .takes_value(true),
                 )
@@ -161,8 +161,8 @@ fn main() {
         .get_matches();
 
     if let Some(command) = matches.subcommand_matches("tessellate") {
-        let output = get_output(&command);
-        let cmd = get_tess_command(&command, true);
+        let output = get_output(command);
+        let cmd = get_tess_command(command, true);
         let cmd_copy = cmd.clone();
         let float_precision = cmd.float_precision;
 
@@ -198,9 +198,9 @@ fn main() {
 
     if let Some(command) = matches.subcommand_matches("path") {
         let cmd = PathCmd {
-            path: get_path(&command).expect("Need a path to transform"),
+            path: get_path(command).expect("Need a path to transform"),
             output: get_output(command),
-            tolerance: get_tolerance(&command),
+            tolerance: get_tolerance(command),
             count: command.is_present("COUNT"),
             flatten: command.is_present("FLATTEN"),
         };
@@ -217,7 +217,6 @@ fn main() {
             max_points: fuzz_matches
                 .value_of("MAX_POINTS")
                 .and_then(|str_val| str_val.parse::<u32>().ok()),
-            tessellator: get_tessellator(fuzz_matches),
             ignore_errors: fuzz_matches.is_present("IGNORE_ERRORS"),
         });
     }
@@ -234,7 +233,7 @@ fn main() {
     }
 }
 
-fn declare_input_path<'a, 'b>(app: App<'a, 'b>) -> App<'a, 'b> {
+fn declare_input_path(app: App) -> App {
     app.arg(
         Arg::with_name("PATH")
             .value_name("PATH")
@@ -244,7 +243,7 @@ fn declare_input_path<'a, 'b>(app: App<'a, 'b>) -> App<'a, 'b> {
     )
     .arg(
         Arg::with_name("INPUT")
-            .short("i")
+            .short('i')
             .long("input")
             .help("Sets the input file to use")
             .value_name("FILE")
@@ -253,7 +252,7 @@ fn declare_input_path<'a, 'b>(app: App<'a, 'b>) -> App<'a, 'b> {
     )
 }
 
-fn declare_tess_params<'a, 'b>(app: App<'a, 'b>, need_path: bool) -> App<'a, 'b> {
+fn declare_tess_params(app: App, need_path: bool) -> App {
     if need_path {
         declare_input_path(app)
     } else {
@@ -261,13 +260,13 @@ fn declare_tess_params<'a, 'b>(app: App<'a, 'b>, need_path: bool) -> App<'a, 'b>
     }
     .arg(
         Arg::with_name("FILL")
-            .short("f")
+            .short('f')
             .long("fill")
             .help("Fills the path"),
     )
     .arg(
         Arg::with_name("STROKE")
-            .short("s")
+            .short('s')
             .long("stroke")
             .help("Strokes the path"),
     )
@@ -287,7 +286,7 @@ fn declare_tess_params<'a, 'b>(app: App<'a, 'b>, need_path: bool) -> App<'a, 'b>
     )
     .arg(
         Arg::with_name("TOLERANCE")
-            .short("t")
+            .short('t')
             .long("tolerance")
             .help("Sets the tolerance threshold for flattening (0.5 by default)")
             .value_name("TOLERANCE")
@@ -295,7 +294,7 @@ fn declare_tess_params<'a, 'b>(app: App<'a, 'b>, need_path: bool) -> App<'a, 'b>
     )
     .arg(
         Arg::with_name("LINE_WIDTH")
-            .short("w")
+            .short('w')
             .long("line-width")
             .help("The line width for strokes")
             .value_name("LINE_WIDTH")
@@ -330,6 +329,20 @@ fn declare_tess_params<'a, 'b>(app: App<'a, 'b>, need_path: bool) -> App<'a, 'b>
             .takes_value(true),
     )
     .arg(
+        Arg::with_name("CUSTOM_ATTRIBUTES")
+            .long("custom-attributes")
+            .help("Custom attributes")
+            .value_name("CUSTOM_ATTRIBUTES")
+            .takes_value(true),
+    )
+    .arg(
+        Arg::with_name("VARIABLE_LINE_WIDTH")
+            .long("variable-line-width")
+            .help("Variable line width")
+            .value_name("VARIABLE_LINE_WIDTH")
+            .takes_value(true),
+    )
+    .arg(
         Arg::with_name("SWEEP_ORIENTATION")
             .long("sweep-orientation")
             .help("Traverse the geometry vertically or horizontally.")
@@ -358,7 +371,7 @@ fn get_path(matches: &ArgMatches) -> Option<Path> {
         if let Ok(mut file) = File::open(input_file) {
             file.read_to_string(&mut path_str).unwrap();
         } else {
-            write!(&mut stderr(), "Cannot open file {}", input_file).unwrap();
+            eprintln!("Cannot open file {input_file}");
             return None;
         }
     }
@@ -367,27 +380,33 @@ fn get_path(matches: &ArgMatches) -> Option<Path> {
         return None;
     }
 
-    match build_path(Path::builder().with_svg(), &path_str) {
-        Ok(path) => Some(path),
-        Err(e) => {
-            println!("Error while parsing path: {}", path_str);
-            println!("{:?}", e);
-            None
-        }
+    let mut parser = PathParser::new();
+
+    let mut options = ParserOptions::DEFAULT;
+    if let Some(num_attributes_str) = matches.value_of("CUSTOM_ATTRIBUTES") {
+        options.num_attributes = num_attributes_str.parse::<usize>().unwrap_or(0);
     }
+
+    let mut builder = Path::builder_with_attributes(options.num_attributes);
+
+    if let Err(e) = parser.parse(&options, &mut Source::new(path_str.chars()), &mut builder) {
+        println!("Error while parsing path: {}", path_str);
+        println!("{:?}", e);
+    }
+
+    Some(builder.build())
 }
 
 fn get_render_params(matches: &ArgMatches) -> RenderCmd {
     RenderCmd {
         aa: if let Some(aa) = matches.value_of("ANTIALIASING") {
             match aa {
-                "msaa4" => AntiAliasing::Msaa(4),
-                "msaa8" => AntiAliasing::Msaa(8),
-                "msaa16" => AntiAliasing::Msaa(16),
+                // wgpu currently only supports msaa 4 for portability reasons.
+                "msaa" => AntiAliasing::Msaa(4),
                 _ => AntiAliasing::None,
             }
         } else {
-            AntiAliasing::Msaa(8)
+            AntiAliasing::Msaa(4)
         },
         background: get_background(matches),
         debugger: get_debugger(matches),
@@ -409,7 +428,7 @@ fn get_tess_command(command: &ArgMatches, need_path: bool) -> TessellateCmd {
     let fill =
         if command.is_present("FILL") || (stroke.is_none() && hatch.is_none() && dots.is_none()) {
             Some(
-                FillOptions::tolerance(get_tolerance(&command))
+                FillOptions::tolerance(get_tolerance(command))
                     .with_fill_rule(fill_rule)
                     .with_sweep_orientation(orientation),
             )
@@ -417,13 +436,15 @@ fn get_tess_command(command: &ArgMatches, need_path: bool) -> TessellateCmd {
             None
         };
 
-    let float_precision = command.value_of("FLOAT_PRECISION").map(|fp| {
-        fp.parse::<usize>()
-            .expect("Precision must be an integer")
-            .min(7)
-    });
-
-    let tessellator = get_tessellator(command);
+    let float_precision = if command.try_contains_id("FLOAT_PRECISION").is_ok() {
+        command.value_of("FLOAT_PRECISION").map(|fp| {
+            fp.parse::<usize>()
+                .expect("Precision must be an integer")
+                .min(7)
+        })
+    } else {
+        None
+    };
 
     TessellateCmd {
         path,
@@ -432,7 +453,6 @@ fn get_tess_command(command: &ArgMatches, need_path: bool) -> TessellateCmd {
         hatch,
         dots,
         float_precision,
-        tessellator,
     }
 }
 
@@ -457,6 +477,10 @@ fn get_stroke(matches: &ArgMatches) -> Option<StrokeOptions> {
         if let Some(limit) = get_miter_limit(matches) {
             options.miter_limit = limit;
         }
+        if let Some(var_stroke_str) = matches.value_of("VARIABLE_LINE_WIDTH") {
+            options.variable_line_width = var_stroke_str.parse::<usize>().ok()
+        }
+
         Some(options)
     } else {
         None
@@ -632,24 +656,11 @@ fn get_hatching_angle(matches: &ArgMatches) -> Angle<f32> {
 }
 
 fn get_output(matches: &ArgMatches) -> Box<dyn Write> {
-    let mut output: Box<dyn Write> = Box::new(stdout());
     if let Some(output_file) = matches.value_of("OUTPUT") {
         if let Ok(file) = File::create(output_file) {
-            output = Box::new(file);
+            return Box::new(file);
         }
     }
 
-    output
-}
-
-fn get_tessellator(matches: &ArgMatches) -> Tessellator {
-    if let Some(stroke_str) = matches.value_of("TESSELLATOR") {
-        match stroke_str {
-            "default" => Tessellator::Default,
-            "libtess2" => Tessellator::Tess2,
-            _ => Tessellator::Default,
-        }
-    } else {
-        Tessellator::Default
-    }
+    Box::new(stdout())
 }

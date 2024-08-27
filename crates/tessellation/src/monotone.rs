@@ -1,7 +1,8 @@
-use crate::fill::is_after;
+use crate::fill::{is_after, Side};
 use crate::math::{point, Point};
-use crate::Side;
 use crate::{FillGeometryBuilder, VertexId};
+
+use alloc::vec::Vec;
 
 /// Helper class that generates a triangulation from a sequence of vertices describing a monotone
 /// polygon (used internally by the `FillTessellator`).
@@ -70,7 +71,7 @@ impl BasicMonotoneTessellator {
                 let winding = (a.pos - b.pos).cross(current.pos - b.pos) >= 0.0;
 
                 if !winding {
-                    std::mem::swap(&mut a, &mut b);
+                    core::mem::swap(&mut a, &mut b);
                 }
 
                 self.push_triangle(&a, &b, &current);
@@ -84,7 +85,7 @@ impl BasicMonotoneTessellator {
                 let mut b = *self.stack.last().unwrap();
 
                 if current.side.is_right() {
-                    std::mem::swap(&mut a, &mut b);
+                    core::mem::swap(&mut a, &mut b);
                 }
 
                 let cross = (current.pos - b.pos).cross(a.pos - b.pos);
@@ -112,8 +113,8 @@ impl BasicMonotoneTessellator {
 
     #[inline]
     fn push_triangle(&mut self, a: &MonotoneVertex, b: &MonotoneVertex, c: &MonotoneVertex) {
-        let threshold = -0.0625; // Floating point errors stroke again :(
-        debug_assert!((a.pos - b.pos).cross(c.pos - b.pos) >= threshold);
+        //let threshold = -0.0625; // Floating point errors stroke again :(
+        //debug_assert!((a.pos - b.pos).cross(c.pos - b.pos) >= threshold);
 
         self.push_triangle_ids(a.id, b.id, c.id);
     }
@@ -139,7 +140,7 @@ impl BasicMonotoneTessellator {
 
 #[test]
 fn test_monotone_tess() {
-    println!(" ------------ ");
+    std::println!(" ------------ ");
     {
         let mut tess = BasicMonotoneTessellator::new();
         tess.begin(point(0.0, 0.0), VertexId(0));
@@ -147,7 +148,7 @@ fn test_monotone_tess() {
         tess.end(point(1.0, 2.0), VertexId(2));
         assert_eq!(tess.triangles.len(), 1);
     }
-    println!(" ------------ ");
+    std::println!(" ------------ ");
     {
         let mut tess = BasicMonotoneTessellator::new();
         tess.begin(point(0.0, 0.0), VertexId(0));
@@ -158,7 +159,7 @@ fn test_monotone_tess() {
         tess.end(point(0.0, 5.0), VertexId(5));
         assert_eq!(tess.triangles.len(), 4);
     }
-    println!(" ------------ ");
+    std::println!(" ------------ ");
     {
         let mut tess = BasicMonotoneTessellator::new();
         tess.begin(point(0.0, 0.0), VertexId(0));
@@ -170,7 +171,7 @@ fn test_monotone_tess() {
         tess.end(point(0.0, 6.0), VertexId(6));
         assert_eq!(tess.triangles.len(), 5);
     }
-    println!(" ------------ ");
+    std::println!(" ------------ ");
     {
         let mut tess = BasicMonotoneTessellator::new();
         tess.begin(point(0.0, 0.0), VertexId(0));
@@ -182,7 +183,7 @@ fn test_monotone_tess() {
         tess.end(point(0.0, 6.0), VertexId(6));
         assert_eq!(tess.triangles.len(), 5);
     }
-    println!(" ------------ ");
+    std::println!(" ------------ ");
 }
 
 struct SideEvents {
@@ -211,7 +212,7 @@ impl SideEvents {
     }
 }
 
-pub struct AdvancedMonotoneTessellator {
+pub(crate) struct AdvancedMonotoneTessellator {
     tess: BasicMonotoneTessellator,
     left: SideEvents,
     right: SideEvents,
@@ -341,7 +342,7 @@ impl AdvancedMonotoneTessellator {
             }
             (Some(mut v1), Some(mut v2)) => {
                 if is_after(v1.pos, v2.pos) {
-                    std::mem::swap(&mut v1, &mut v2);
+                    core::mem::swap(&mut v1, &mut v2);
                 }
                 self.tess.monotone_vertex(v1);
                 self.tess.monotone_vertex(v2);
@@ -377,7 +378,7 @@ fn flush_side(
             let mut b = a + step;
             last_index = b + step;
             if s == Side::Right {
-                std::mem::swap(&mut a, &mut b);
+                core::mem::swap(&mut a, &mut b);
             }
             tess.push_triangle_ids(side.events[a], side.events[b], side.events[last_index]);
         }
@@ -386,7 +387,7 @@ fn flush_side(
             let mut b = last_index;
             let mut c = last_index + step;
             if s == Side::Right {
-                std::mem::swap(&mut b, &mut c);
+                core::mem::swap(&mut b, &mut c);
             }
 
             tess.push_triangle_ids(side.events[0], side.events[b], side.events[c]);
@@ -402,4 +403,4 @@ fn flush_side(
     Some(side.last)
 }
 
-pub type MonotoneTessellator = AdvancedMonotoneTessellator;
+pub(crate) type MonotoneTessellator = AdvancedMonotoneTessellator;

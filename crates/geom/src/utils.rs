@@ -21,7 +21,7 @@ pub fn normalized_tangent<S: Scalar>(v: Vector<S>) -> Vector<S> {
     tangent(v).normalize()
 }
 
-/// Angle between vectors v1 and v2 (oriented clockwise assyming y points downwards).
+/// Angle between vectors v1 and v2 (oriented clockwise assuming y points downwards).
 /// The result is a number between `0` and `2 * PI`.
 ///
 /// ex: `directed_angle([0,1], [1,0]) = 3/2 Pi rad`
@@ -59,7 +59,7 @@ pub fn directed_angle2<S: Scalar>(center: Point<S>, a: Point<S>, b: Point<S>) ->
     directed_angle(a - center, b - center)
 }
 
-pub fn cubic_polynomial_roots<S: Scalar>(a: S, b: S, c: S, d: S) -> ArrayVec<[S; 3]> {
+pub fn cubic_polynomial_roots<S: Scalar>(a: S, b: S, c: S, d: S) -> ArrayVec<S, 3> {
     let mut result = ArrayVec::new();
 
     let m = a.abs().max(b.abs()).max(c.abs()).max(d.abs());
@@ -128,10 +128,10 @@ pub fn cubic_polynomial_roots<S: Scalar>(a: S, b: S, c: S, d: S) -> ArrayVec<[S;
 
 #[test]
 fn cubic_polynomial() {
-    fn assert_approx_eq(a: ArrayVec<[f32; 3]>, b: &[f32], epsilon: f32) {
+    fn assert_approx_eq(a: ArrayVec<f32, 3>, b: &[f32], epsilon: f32) {
         for i in 0..a.len() {
             if f32::abs(a[i] - b[i]) > epsilon {
-                println!("{:?} != {:?}", a, b);
+                std::println!("{a:?} != {b:?}");
             }
             assert!((a[i] - b[i]).abs() <= epsilon);
         }

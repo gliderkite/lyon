@@ -30,16 +30,20 @@ use crate::geom::LineSegment;
 use crate::math::{point, vector, Angle, Point, Rotation, Vector};
 use crate::path::builder::{Build, PathBuilder};
 use crate::path::private::DebugValidator;
-use crate::path::{self, EndpointId, PathEvent};
-use std::marker::PhantomData;
+use crate::path::{self, Attributes, EndpointId, PathEvent, NO_ATTRIBUTES};
+use core::marker::PhantomData;
 
-use std::cmp::Ordering;
-use std::f32;
-use std::mem;
+use core::cmp::Ordering;
+use core::mem;
+
+use alloc::vec::Vec;
 
 /// Parameters for the hatcher.
 #[derive(Copy, Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serialization", derive(Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[non_exhaustive]
 pub struct HatchingOptions {
     /// Maximum allowed distance to the path when building an approximation.
@@ -116,7 +120,10 @@ impl HatchingOptions {
 
 /// Parameters for generating dot patterns.
 #[derive(Copy, Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serialization", derive(Serialize, Deserialize))]
+#[cfg_attr(
+    feature = "serialization",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[non_exhaustive]
 pub struct DotOptions {
     /// Maximum allowed distance to the path when building an approximation.
@@ -308,7 +315,7 @@ impl Hatcher {
         options: &HatchingOptions,
         output: &mut dyn HatchBuilder,
     ) where
-        Iter: Iterator<Item = PathEvent>,
+        Iter: IntoIterator<Item = PathEvent>,
     {
         let mut events = mem::replace(&mut self.events, HatchingEvents::new());
         events.set_path(options.tolerance, options.angle, it);
@@ -321,7 +328,7 @@ impl Hatcher {
     /// Generate dots for a path.
     pub fn dot_path<Iter>(&mut self, it: Iter, options: &DotOptions, output: &mut dyn DotBuilder)
     where
-        Iter: Iterator<Item = PathEvent>,
+        Iter: IntoIterator<Item = PathEvent>,
     {
         let mut events = mem::replace(&mut self.events, HatchingEvents::new());
         events.set_path(options.tolerance, options.angle, it);
@@ -506,7 +513,11 @@ impl Build for EventsBuilder {
 }
 
 impl PathBuilder for EventsBuilder {
-    fn begin(&mut self, to: Point) -> EndpointId {
+    fn num_attributes(&self) -> usize {
+        0
+    }
+
+    fn begin(&mut self, to: Point, _attributes: Attributes) -> EndpointId {
         self.validator.begin();
         self.first = to;
         self.current = to;
@@ -519,7 +530,7 @@ impl PathBuilder for EventsBuilder {
         self.add_edge(self.current, self.first);
     }
 
-    fn line_to(&mut self, to: Point) -> EndpointId {
+    fn line_to(&mut self, to: Point, _attributes: Attributes) -> EndpointId {
         self.validator.edge();
         self.add_edge(self.current, to);
         self.current = to;
@@ -527,26 +538,56 @@ impl PathBuilder for EventsBuilder {
         EndpointId::INVALID
     }
 
-    fn quadratic_bezier_to(&mut self, ctrl: Point, to: Point) -> EndpointId {
-        path::private::flatten_quadratic_bezier(self.tolerance, self.current, ctrl, to, self)
+    fn quadratic_bezier_to(
+        &mut self,
+        ctrl: Point,
+        to: Point,
+        _attributes: Attributes,
+    ) -> EndpointId {
+        path::private::flatten_quadratic_bezier(
+            self.tolerance,
+            self.current,
+            ctrl,
+            to,
+            NO_ATTRIBUTES,
+            NO_ATTRIBUTES,
+            self,
+            &mut [],
+        )
     }
 
-    fn cubic_bezier_to(&mut self, ctrl1: Point, ctrl2: Point, to: Point) -> EndpointId {
-        path::private::flatten_cubic_bezier(self.tolerance, self.current, ctrl1, ctrl2, to, self)
+    fn cubic_bezier_to(
+        &mut self,
+        ctrl1: Point,
+        ctrl2: Point,
+        to: Point,
+        _attributes: Attributes,
+    ) -> EndpointId {
+        path::private::flatten_cubic_bezier(
+            self.tolerance,
+            self.current,
+            ctrl1,
+            ctrl2,
+            to,
+            NO_ATTRIBUTES,
+            NO_ATTRIBUTES,
+            self,
+            &mut [],
+        )
     }
 }
 
 impl HatchingEvents {
     pub fn set_path<Iter>(&mut self, tolerance: f32, angle: Angle, it: Iter)
     where
-        Iter: Iterator<Item = PathEvent>,
+        Iter: IntoIterator<Item = PathEvent>,
     {
         self.edges.clear();
         let mut builder = EventsBuilder::new(angle, tolerance);
         builder.edges = mem::take(&mut self.edges);
 
         for evt in it {
-            builder.path_event(evt);
+            builder.path_event(evt, NO_ATTRIBUTES);
         }
         mem::swap(self, &mut builder.build());
     }
@@ -617,11 +658,11 @@ pub struct RegularHatchingPattern<Cb: FnMut(&HatchSegment)> {
 }
 
 impl<Cb: FnMut(&HatchSegment)> HatchBuilder for RegularHatchingPattern<Cb> {
-    fn next_offset(&mut self, _row: u32) -> f32 {
-        self.interval
-    }
     fn add_segment(&mut self, segment: &HatchSegment) {
         (self.callback)(segment)
+    }
+    fn next_offset(&mut self, _row: u32) -> f32 {
+        self.interval
     }
 }
 
@@ -632,13 +673,6 @@ struct HatchesToDots<'l> {
 }
 
 impl<'l> HatchBuilder for HatchesToDots<'l> {
-    fn next_offset(&mut self, row: u32) -> f32 {
-        let val = self.builder.next_row_offset(self.column, row);
-        self.column = 0;
-
-        val
-    }
-
     fn add_segment(&mut self, segment: &HatchSegment) {
         let row = segment.row;
         let mut u = self.builder.first_column_offset(row);
@@ -671,6 +705,13 @@ impl<'l> HatchBuilder for HatchesToDots<'l> {
 
             u += du;
         }
+    }
+
+    fn next_offset(&mut self, row: u32) -> f32 {
+        let val = self.builder.next_row_offset(self.column, row);
+        self.column = 0;
+
+        val
     }
 }
 

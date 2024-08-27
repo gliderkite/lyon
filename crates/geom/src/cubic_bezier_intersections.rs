@@ -5,12 +5,13 @@ use crate::CubicBezierSegment;
 ///!
 ///! The implementation here was originally ported from that of paper.js:
 ///! https://github.com/paperjs/paper.js/blob/0deddebb2c83ea2a0c848f7c8ba5e22fa7562a4e/src/path/Curve.js#L2008
-///! See "Bézier Clipping method" in
+///! See "bézier Clipping method" in
 ///! https://scholarsarchive.byu.edu/facpub/1/
 ///! for motivation and details of how the process works.
-use crate::{point, Point, Rect};
+use crate::{point, Box2D, Point};
 use arrayvec::ArrayVec;
-use std::ops::Range;
+use core::mem;
+use core::ops::Range;
 
 // Computes the intersections (if any) between two cubic bézier curves in the form of the `t`
 // parameters of each intersection point along the curves.
@@ -22,10 +23,10 @@ use std::ops::Range;
 pub fn cubic_bezier_intersections_t<S: Scalar>(
     curve1: &CubicBezierSegment<S>,
     curve2: &CubicBezierSegment<S>,
-) -> ArrayVec<[(S, S); 9]> {
+) -> ArrayVec<(S, S), 9> {
     if !curve1
-        .fast_bounding_rect()
-        .intersects(&curve2.fast_bounding_rect())
+        .fast_bounding_box()
+        .intersects(&curve2.fast_bounding_box())
         || curve1 == curve2
         || (curve1.from == curve2.to
             && curve1.ctrl1 == curve2.ctrl2
@@ -49,7 +50,7 @@ pub fn cubic_bezier_intersections_t<S: Scalar>(
     let curve2_is_a_point = curve2.is_a_point(S::EPSILON);
     if curve1_is_a_point && !curve2_is_a_point {
         let point1 = midpoint(&curve1.from, &curve1.to);
-        let curve_params = point_curve_intersections(&point1, &curve2, S::EPSILON);
+        let curve_params = point_curve_intersections(&point1, curve2, S::EPSILON);
         for t in curve_params {
             if t > S::EPSILON && t < S::ONE - S::EPSILON {
                 result.push((S::ZERO, t));
@@ -57,7 +58,7 @@ pub fn cubic_bezier_intersections_t<S: Scalar>(
         }
     } else if !curve1_is_a_point && curve2_is_a_point {
         let point2 = midpoint(&curve2.from, &curve2.to);
-        let curve_params = point_curve_intersections(&point2, &curve1, S::EPSILON);
+        let curve_params = point_curve_intersections(&point2, curve1, S::EPSILON);
         for t in curve_params {
             if t > S::EPSILON && t < S::ONE - S::EPSILON {
                 result.push((t, S::ZERO));
@@ -80,16 +81,16 @@ pub fn cubic_bezier_intersections_t<S: Scalar>(
         result = line_line_intersections(curve1, curve2);
     } else {
         add_curve_intersections(
-            &curve1,
-            &curve2,
+            curve1,
+            curve2,
             &(S::ZERO..S::ONE),
             &(S::ZERO..S::ONE),
             &mut result,
             /* flip */ false,
             /* recursion_count */ 0,
             /* call_count */ 0,
-            /* original curve1 */ &curve1,
-            /* original curve2 */ &curve2,
+            /* original curve1 */ curve1,
+            /* original curve2 */ curve2,
         );
     }
 
@@ -100,7 +101,7 @@ fn point_curve_intersections<S: Scalar>(
     pt: &Point<S>,
     curve: &CubicBezierSegment<S>,
     epsilon: S,
-) -> ArrayVec<[S; 9]> {
+) -> ArrayVec<S, 9> {
     let mut result = ArrayVec::new();
 
     // (If both endpoints are epsilon close, we only return S::ZERO.)
@@ -154,7 +155,7 @@ fn point_curve_intersections<S: Scalar>(
         pt: &Point<S>,
         curve: &CubicBezierSegment<S>,
         epsilon: S,
-        result: &mut ArrayVec<[S; 9]>,
+        result: &mut ArrayVec<S, 9>,
     ) -> bool {
         if (curve.sample(t) - *pt).square_length() < epsilon {
             result.push(t);
@@ -175,7 +176,7 @@ fn line_curve_intersections<S: Scalar>(
     line_as_curve: &CubicBezierSegment<S>,
     curve: &CubicBezierSegment<S>,
     flip: bool,
-) -> ArrayVec<[(S, S); 9]> {
+) -> ArrayVec<(S, S), 9> {
     let mut result = ArrayVec::new();
     let baseline = line_as_curve.baseline();
     let curve_intersections = curve.line_intersections_t(&baseline.to_line());
@@ -201,7 +202,7 @@ fn line_curve_intersections<S: Scalar>(
 fn line_line_intersections<S: Scalar>(
     curve1: &CubicBezierSegment<S>,
     curve2: &CubicBezierSegment<S>,
-) -> ArrayVec<[(S, S); 9]> {
+) -> ArrayVec<(S, S), 9> {
     let mut result = ArrayVec::new();
 
     let intersection = curve1
@@ -218,7 +219,7 @@ fn line_line_intersections<S: Scalar>(
     fn parameters_for_line_point<S: Scalar>(
         curve: &CubicBezierSegment<S>,
         pt: &Point<S>,
-    ) -> ArrayVec<[S; 3]> {
+    ) -> ArrayVec<S, 3> {
         let line_is_mostly_vertical =
             S::abs(curve.from.y - curve.to.y) >= S::abs(curve.from.x - curve.to.x);
         if line_is_mostly_vertical {
@@ -228,12 +229,12 @@ fn line_line_intersections<S: Scalar>(
         }
     }
 
-    let line1_params = parameters_for_line_point(&curve1, &intersection);
+    let line1_params = parameters_for_line_point(curve1, &intersection);
     if line1_params.is_empty() {
         return result;
     }
 
-    let line2_params = parameters_for_line_point(&curve2, &intersection);
+    let line2_params = parameters_for_line_point(curve2, &intersection);
     if line2_params.is_empty() {
         return result;
     }
@@ -254,7 +255,7 @@ fn line_line_intersections<S: Scalar>(
 // the curves intersects the fat line of the other curve at each stage.
 //
 // curve1 and curve2 at each stage are sub-bézier curves of the original curves; flip tells us
-// whether curve1 at a given stage is a subcurve of the original curve1 or the original curve2;
+// whether curve1 at a given stage is a sub-curve of the original curve1 or the original curve2;
 // similarly for curve2.  domain1 and domain2 shrink (or stay the same) at each stage and describe
 // which subdomain of an original curve the current curve1 and curve2 correspond to. (The domains of
 // curve1 and curve2 are 0..1 at every stage.)
@@ -264,7 +265,7 @@ fn add_curve_intersections<S: Scalar>(
     curve2: &CubicBezierSegment<S>,
     domain1: &Range<S>,
     domain2: &Range<S>,
-    intersections: &mut ArrayVec<[(S, S); 9]>,
+    intersections: &mut ArrayVec<(S, S), 9>,
     flip: bool,
     mut recursion_count: u32,
     mut call_count: u32,
@@ -285,7 +286,7 @@ fn add_curve_intersections<S: Scalar>(
 
     if domain2.start == domain2.end || curve2.is_a_point(S::ZERO) {
         add_point_curve_intersection(
-            &curve2,
+            curve2,
             /* point is curve1 */ false,
             curve1,
             domain2,
@@ -328,7 +329,7 @@ fn add_curve_intersections<S: Scalar>(
 
     // (Don't call this before checking for point curves: points are inexact and can lead to false
     // negatives here.)
-    if !rectangles_overlap(&curve1.fast_bounding_rect(), &curve2.fast_bounding_rect()) {
+    if !rectangles_overlap(&curve1.fast_bounding_box(), &curve2.fast_bounding_box()) {
         return call_count;
     }
 
@@ -340,7 +341,7 @@ fn add_curve_intersections<S: Scalar>(
     // t_min_clip and t_max_clip are (0, 1)-based, so project them back to get the new restricted
     // range:
     let new_domain1 =
-        &(domain_value_at_t(&domain1, t_min_clip)..domain_value_at_t(&domain1, t_max_clip));
+        &(domain_value_at_t(domain1, t_min_clip)..domain_value_at_t(domain1, t_max_clip));
 
     if S::max(
         domain2.end - domain2.start,
@@ -372,7 +373,7 @@ fn add_curve_intersections<S: Scalar>(
     // is a point (but then curve1 will be very small).)
     if new_domain1.start == new_domain1.end || curve1.is_a_point(S::ZERO) {
         add_point_curve_intersection(
-            &curve1,
+            curve1,
             /* point is curve1 */ true,
             curve2,
             new_domain1,
@@ -482,7 +483,7 @@ fn add_point_curve_intersection<S: Scalar>(
     curve: &CubicBezierSegment<S>,
     pt_domain: &Range<S>,
     curve_domain: &Range<S>,
-    intersections: &mut ArrayVec<[(S, S); 9]>,
+    intersections: &mut ArrayVec<(S, S), 9>,
     flip: bool,
 ) {
     let pt = pt_curve.from;
@@ -561,7 +562,7 @@ fn add_intersection<S: Scalar>(
     t2: S,
     orig_curve2: &CubicBezierSegment<S>,
     flip: bool,
-    intersections: &mut ArrayVec<[(S, S); 9]>,
+    intersections: &mut ArrayVec<(S, S), 9>,
 ) {
     let (t1, t2) = if flip { (t2, t1) } else { (t1, t2) };
     // (This should probably depend in some way on how large our input coefficients are.)
@@ -619,7 +620,9 @@ fn restrict_curve_to_fat_line<S: Scalar>(
     let d_2 = baseline2.signed_distance_to_point(&curve1.ctrl2);
     let d_3 = baseline2.signed_distance_to_point(&curve1.to);
 
-    let (mut top, mut bottom) = convex_hull_of_distance_curve(d_0, d_1, d_2, d_3);
+    let mut top = ArrayVec::new();
+    let mut bottom = ArrayVec::new();
+    convex_hull_of_distance_curve(d_0, d_1, d_2, d_3, &mut top, &mut bottom);
     let (d_min, d_max) = curve2.fat_line_min_max();
 
     clip_convex_hull_to_fat_line(&mut top, &mut bottom, d_min, d_max)
@@ -634,7 +637,12 @@ fn convex_hull_of_distance_curve<S: Scalar>(
     d1: S,
     d2: S,
     d3: S,
-) -> (Vec<Point<S>>, Vec<Point<S>>) {
+    top: &mut ArrayVec<Point<S>, 4>,
+    bottom: &mut ArrayVec<Point<S>, 4>,
+) {
+    debug_assert!(top.is_empty());
+    debug_assert!(bottom.is_empty());
+
     let p0 = point(S::ZERO, d0);
     let p1 = point(S::ONE / S::THREE, d1);
     let p2 = point(S::TWO / S::THREE, d2);
@@ -644,9 +652,10 @@ fn convex_hull_of_distance_curve<S: Scalar>(
     let dist2 = d2 - (d0 + S::TWO * d3) / S::THREE;
 
     // Compute the hull assuming p1 is on top - we'll switch later if needed.
-    let mut hull = if dist1 * dist2 < S::ZERO {
+    if dist1 * dist2 < S::ZERO {
         // p1 and p2 lie on opposite sides of [p0, p3], so the hull is a quadrilateral:
-        (vec![p0, p1, p3], vec![p0, p2, p3])
+        let _ = top.try_extend_from_slice(&[p0, p1, p3]);
+        let _ = bottom.try_extend_from_slice(&[p0, p2, p3]);
     } else {
         // p1 and p2 lie on the same side of [p0, p3]. The hull can be a triangle or a
         // quadrilateral, and [p0, p3] is part of the hull. The hull is a triangle if the vertical
@@ -655,38 +664,39 @@ fn convex_hull_of_distance_curve<S: Scalar>(
         let dist1 = S::abs(dist1);
         let dist2 = S::abs(dist2);
         if dist1 >= S::TWO * dist2 {
-            (vec![p0, p1, p3], vec![p0, p3])
+            let _ = top.try_extend_from_slice(&[p0, p1, p3]);
+            let _ = bottom.try_extend_from_slice(&[p0, p3]);
         } else if dist2 >= S::TWO * dist1 {
-            (vec![p0, p2, p3], vec![p0, p3])
+            let _ = top.try_extend_from_slice(&[p0, p2, p3]);
+            let _ = bottom.try_extend_from_slice(&[p0, p3]);
         } else {
-            (vec![p0, p1, p2, p3], vec![p0, p3])
+            let _ = top.try_extend_from_slice(&[p0, p1, p2, p3]);
+            let _ = bottom.try_extend_from_slice(&[p0, p3]);
         }
-    };
+    }
 
     // Flip the hull if needed:
     if dist1 < S::ZERO || (dist1 == S::ZERO && dist2 < S::ZERO) {
-        hull = (hull.1, hull.0);
+        mem::swap(top, bottom);
     }
-
-    hull
 }
 
 // Returns the min and max values at which the convex hull enters the fat line min/max offset lines.
 fn clip_convex_hull_to_fat_line<S: Scalar>(
-    hull_top: &mut Vec<Point<S>>,
-    hull_bottom: &mut Vec<Point<S>>,
+    hull_top: &mut [Point<S>],
+    hull_bottom: &mut [Point<S>],
     d_min: S,
     d_max: S,
 ) -> Option<(S, S)> {
     // Walk from the left corner of the convex hull until we enter the fat line limits:
-    let t_clip_min = walk_convex_hull_start_to_fat_line(&hull_top, &hull_bottom, d_min, d_max)?;
+    let t_clip_min = walk_convex_hull_start_to_fat_line(hull_top, hull_bottom, d_min, d_max)?;
 
     // Now walk from the right corner of the convex hull until we enter the fat line limits - to
     // walk right to left we just reverse the order of the hull vertices, so that hull_top and
     // hull_bottom start at the right corner now:
     hull_top.reverse();
     hull_bottom.reverse();
-    let t_clip_max = walk_convex_hull_start_to_fat_line(&hull_top, &hull_bottom, d_min, d_max)?;
+    let t_clip_max = walk_convex_hull_start_to_fat_line(hull_top, hull_bottom, d_min, d_max)?;
 
     Some((t_clip_min, t_clip_max))
 }
@@ -744,12 +754,9 @@ fn domain_value_at_t<S: Scalar>(domain: &Range<S>, t: S) -> S {
 }
 
 #[inline]
-// Rect.intersects doesn't count edge/corner intersections, this version does.
-fn rectangles_overlap<S: Scalar>(r1: &Rect<S>, r2: &Rect<S>) -> bool {
-    r1.origin.x <= r2.origin.x + r2.size.width
-        && r2.origin.x <= r1.origin.x + r1.size.width
-        && r1.origin.y <= r2.origin.y + r2.size.height
-        && r2.origin.y <= r1.origin.y + r1.size.height
+// Box2D::intersects doesn't count edge/corner intersections, this version does.
+fn rectangles_overlap<S: Scalar>(r1: &Box2D<S>, r2: &Box2D<S>) -> bool {
+    r1.min.x <= r2.max.x && r2.min.x <= r1.max.x && r1.min.y <= r2.max.y && r2.min.y <= r1.max.y
 }
 
 #[cfg(test)]
@@ -768,7 +775,7 @@ fn do_test_once<S: Scalar>(
     curve2: &CubicBezierSegment<S>,
     intersection_count: i32,
 ) {
-    let intersections = cubic_bezier_intersections_t(&curve1, &curve2);
+    let intersections = cubic_bezier_intersections_t(curve1, curve2);
     for intersection in &intersections {
         let p1 = curve1.sample(intersection.0);
         let p2 = curve2.sample(intersection.1);
@@ -893,7 +900,7 @@ fn test_cubic_control_point_touching() {
     // After splitting the curve2 loop in half, curve1.ctrl1 (and only that
     // point) touches the curve2 fat line - make sure we don't accept that as an
     // intersection. [We're really only interested in the right half of the loop - the rest of the
-    // loop is there just to get past an initial fast_bounding_rect check.]
+    // loop is there just to get past an initial fast_bounding_box check.]
     do_test(
         &CubicBezierSegment {
             from: point(-1.0, 0.0),

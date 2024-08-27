@@ -6,10 +6,10 @@ workspace = "../.."
 
 [[bin]]
 name = "tess_bench"
+path = "src/main.rs"
 
 [features]
 libtess2 = ["tess2-sys"]
-experimental = ["lyon/experimental"]
 profiling = ["lyon/profiling"]
 
 [dependencies]

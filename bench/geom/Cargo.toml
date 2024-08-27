@@ -5,7 +5,8 @@ authors = ["Nicolas Silva <nical@fastmail.com>"]
 workspace = "../.."
 
 [[bin]]
-name = "geom_bench"
+name = "path_bench"
+path = "src/main.rs"
 
 [dependencies]
 lyon = { path = "../../crates/lyon" }
