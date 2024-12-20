@@ -385,20 +385,31 @@ impl<'l, PS: PositionStore, AS: AttributeStore> PathSampler<'l, PS, AS> {
         self.move_cursor(range.end);
         let (ptr2, seg2) = (self.cursor, self.edges[self.cursor].index);
 
+        let mut is_in_subpath = true;
         if seg1 == seg2 {
             self.cursor = ptr1;
             let t_begin = self.t(range.start);
             self.cursor = ptr2;
             let t_end = self.t(range.end);
-            self.add_segment(seg1, Some(t_begin..t_end), output);
+            self.add_segment(seg1, Some(t_begin..t_end), output, &mut is_in_subpath);
         } else {
             self.cursor = ptr1;
-            self.add_segment(seg1, Some(self.t(range.start)..1.0), output);
+            self.add_segment(
+                seg1,
+                Some(self.t(range.start)..1.0),
+                output,
+                &mut is_in_subpath,
+            );
             for seg in (seg1 + 1)..seg2 {
-                self.add_segment(seg, None, output);
+                self.add_segment(seg, None, output, &mut is_in_subpath);
             }
             self.cursor = ptr2;
-            self.add_segment(seg2, Some(0.0..self.t(range.end)), output);
+            self.add_segment(
+                seg2,
+                Some(0.0..self.t(range.end)),
+                output,
+                &mut is_in_subpath,
+            );
         }
 
         output.end(false);
@@ -620,45 +631,73 @@ impl<'l, PS: PositionStore, AS: AttributeStore> PathSampler<'l, PS, AS> {
         }
     }
 
-    fn add_segment(&mut self, ptr: usize, range: Option<Range<f32>>, dest: &mut dyn PathBuilder) {
+    /// Caller needs to hold a parameter to keep track of whether we're in a subpath or not, as this would be determined
+    /// by prior segments. This function will update `is_in_subpath` based on the segment it adds.
+    fn add_segment(
+        &mut self,
+        ptr: usize,
+        range: Option<Range<f32>>,
+        dest: &mut dyn PathBuilder,
+        is_in_subpath: &mut bool,
+    ) {
         let segment = self.to_segment(self.events[ptr]);
         let segment = match range.clone() {
             Some(range) => segment.split(range),
             None => segment,
         };
         macro_rules! obtain_attrs {
-            ($p:ident) => {
-                match range {
+            ($p:ident, $index:tt) => {
+                match range.clone() {
                     Some(range) => {
                         if range.end == 1.0 {
-                            self.attributes.get($p.1)
+                            self.attributes.get($p.$index)
                         } else {
                             self.interpolate_attributes($p.0, $p.1, range.end);
                             &mut self.attribute_buffer
                         }
                     }
-                    None => self.attributes.get($p.1),
+                    None => self.attributes.get($p.$index),
                 }
             };
         }
 
         match segment {
-            SegmentWrapper::Line(LineSegment { to, .. }, pair) => {
-                dest.line_to(to, obtain_attrs!(pair));
+            SegmentWrapper::Line(LineSegment { from, to }, pair) => {
+                if !*is_in_subpath {
+                    dest.end(false);
+                    dest.begin(from, obtain_attrs!(pair, 0));
+                }
+                dest.line_to(to, obtain_attrs!(pair, 1));
             }
-            SegmentWrapper::Quadratic(QuadraticBezierSegment { ctrl, to, .. }, pair) => {
-                dest.quadratic_bezier_to(ctrl, to, obtain_attrs!(pair));
+            SegmentWrapper::Quadratic(QuadraticBezierSegment { from, ctrl, to }, pair) => {
+                if !*is_in_subpath {
+                    dest.end(false);
+                    dest.begin(from, obtain_attrs!(pair, 0));
+                }
+                dest.quadratic_bezier_to(ctrl, to, obtain_attrs!(pair, 1));
             }
             SegmentWrapper::Cubic(
                 CubicBezierSegment {
-                    ctrl1, ctrl2, to, ..
+                    from,
+                    ctrl1,
+                    ctrl2,
+                    to,
                 },
                 pair,
             ) => {
-                dest.cubic_bezier_to(ctrl1, ctrl2, to, obtain_attrs!(pair));
+                if !*is_in_subpath {
+                    dest.end(false);
+                    dest.begin(from, obtain_attrs!(pair, 0));
+                }
+                dest.cubic_bezier_to(ctrl1, ctrl2, to, obtain_attrs!(pair, 1));
             }
             _ => {}
         }
+
+        *is_in_subpath = !matches!(
+            self.events[ptr],
+            IdEvent::End { .. } | IdEvent::Begin { .. }
+        );
     }
 }
 
@@ -940,4 +979,76 @@ fn zero_length() {
     expect_nans(sampler.sample(0.0), 2);
     expect_nans(sampler.sample(0.5), 2);
     expect_nans(sampler.sample(1.0), 2);
+}
+
+
+#[test]
+fn multiple_sub_paths() {
+    let mut path = Path::builder();
+
+    path.begin(point(0.0, 0.0));
+    path.line_to(point(10.0, 0.0));
+    path.end(false);
+
+    path.begin(point(10.0, 10.0));
+    path.line_to(point(20.0, 10.0));
+    path.end(false);
+
+    let path = path.build();
+    let measure = PathMeasurements::from_path(&path, 0.01);
+    let mut sampler = measure.create_sampler(&path, SampleType::Normalized);
+
+    let mut dashes = Path::builder();
+    sampler.split_range(0.0 .. 0.25, &mut dashes);
+    sampler.split_range(0.25 .. 0.5, &mut dashes);
+    // Avoid starting subpaths exactly on the join as we may begin with a zero-length subpath
+    sampler.split_range(0.6 .. 0.75, &mut dashes);
+    sampler.split_range(0.75 .. 1.0, &mut dashes);
+    let dashes = dashes.build();
+
+    let mut iter = dashes.iter();
+
+    use crate::path::geom::euclid::approxeq::ApproxEq;
+    fn expect_begin(event: Option<path::PathEvent>, pos: Point) {
+        std::eprintln!("- {:?}", event);
+        if let Some(path::PathEvent::Begin { at }) = event {
+            assert!(at.approx_eq(&pos), "Expected Begin {:?}, got {:?}", pos, at);
+        } else {
+            panic!("Expected begin, got {:?}", event);
+        }    
+    }
+
+    fn expect_end(event: Option<path::PathEvent>, pos: Point) {
+        std::eprintln!("- {:?}", event);
+        if let Some(path::PathEvent::End { last, .. }) = event {
+            assert!(last.approx_eq(&pos), "Expected End {:?}, got {:?}", pos, last);
+        } else {
+            panic!("Expected end, got {:?}", event);
+        }    
+    }
+    fn expect_line(event: Option<path::PathEvent>, expect_from: Point, expect_to: Point) {
+        std::eprintln!("- {:?}", event);
+        if let Some(path::PathEvent::Line { from, to }) = event {
+            assert!(from.approx_eq(&expect_from), "Expected line {:?} {:?}, got {:?} {:?}", expect_from, expect_to, from, to);
+            assert!(to.approx_eq(&expect_to), "Expected line {:?} {:?}, got {:?} {:?}", expect_from, expect_to, from, to);
+        } else {
+            panic!("Expected a line {:?} {:?}, got {:?}", expect_from, expect_to, event);
+        }    
+    }
+
+    expect_begin(iter.next(), point(0.0, 0.0));
+    expect_line(iter.next(), point(0.0, 0.0), point(5.0, 0.0));
+    expect_end(iter.next(), point(5.0, 0.0));
+
+    expect_begin(iter.next(), point(5.0, 0.0));
+    expect_line(iter.next(), point(5.0, 0.0), point(10.0, 0.0));
+    expect_end(iter.next(), point(10.0, 0.0));
+
+    expect_begin(iter.next(), point(12.0, 10.0));
+    expect_line(iter.next(), point(12.0, 10.0), point(15.0, 10.0));
+    expect_end(iter.next(), point(15.0, 10.0));
+
+    expect_begin(iter.next(), point(15.0, 10.0));
+    expect_line(iter.next(), point(15.0, 10.0), point(20.0, 10.0));
+    expect_end(iter.next(), point(20.0, 10.0));
 }
